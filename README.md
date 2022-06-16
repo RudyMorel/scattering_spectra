@@ -2,15 +2,11 @@
 
 #### REPOSITORY INTO CONSTRUCTION.
 
-
-
 This repository implements the *Scattering Covariance* introduced in [1].
 
 It provides an interpretable low-dimensional representation of multi-scale time-series having stationary increments. 
 
 Among other applications, Scattering Covariance can be applied for time-series **analysis** and time-series **generation**. 
-
-
 
 ## Analysis
 
@@ -24,13 +20,10 @@ X = load_data(name='fbm', R=16, T=4096, H=0.5)
 
 ```python
 RX = analyze(X, cuda=True)
+RX
 ```
 
 The result is an annotated tensor, meaning a tensor of size K x 2 where K is the number of complex coefficients in $RX$. 
-
-```python
-RX
-```
 
 
 
@@ -40,17 +33,12 @@ RX
 
 Here we will compare *fractional Brownian motion* (fBm) which is a Gaussian model and *multifractal random walk* (MRW) which non-Gaussian.
 
-
-
 ```python
-X_fBm = 
+X_fbm = load_data(name='fbm', R=16, T=4096, H=0.5)
+X_mrw = load_data(name='mrw', R=16, T=4096, H=0.5, lam=0.15)
 ```
 
-
-
-File main.py computes this representation for some parametrized models of time-series. 
-
-
+See file main.py, it computes this representation for some parametrized models of time-series. 
 
 ## Synthesis
 
