@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from itertools import product
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -190,7 +191,8 @@ def plot_marginal_moments(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0
 
     labels = labels or [''] * len(RXs)
     labels_here = labels
-    J = RXs[0].idx_info.j.max()
+    columns = RXs[0].idx_info.columns
+    J = RXs[0].idx_info.j.max() if 'j' in columns else RXs[0].idx_info.j1.max()
 
     Cmarginal = np.zeros((len(labels), 3, J))
     estim_error = np.zeros((len(labels), 3, J))
@@ -259,9 +261,11 @@ def plot_cross_phased(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, er
     if labels is not None and len(RXs) != len(labels):
         return ValueError("Invalid number of labels")
 
+    labels = labels or [''] * len(RXs)
     labels_here = labels
     labels_curve = ['']
-    J = RXs[0].idx_info.j.max()
+    columns = RXs[0].idx_info.columns
+    J = RXs[0].idx_info.j.max() if 'j' in columns else RXs[0].idx_info.j1.max()
     cOlors = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 'red', 'purple', 'black',
               'paleturquoise'] + ['orchid'] * 20
 
@@ -339,17 +343,169 @@ def plot_cross_phased(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, er
 
     plt.figure(figsize=(5, 10) if single_plot else (len(labels) * 5, 10))
     for i_lb, (lb, lb_curve) in enumerate(zip(labels_here, labels_curve)):
-        # ax_mod = plt.subplot2grid((2, len(labels)), (0, i_lb))
-        #     if i_lb == 0:
-        #         ax_mod.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
+        ax_mod = plt.subplot2grid((2, len(labels)), (0, i_lb))
+        if i_lb == 0:
+            ax_mod.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
         plot_modulus(i_lb, lb, lb_curve, None, cOlors[i_lb] if single_plot else 'black', cp_mod[i_lb], err_mod[i_lb],
                      err_estim[i_lb])
         # tx = ax_mod.yaxis.get_offset_text().set_fontsize(fontsize - 20)
 
     for i_lb, (lb, lb_curve) in enumerate(zip(labels_here, labels_curve)):
-        # if i_lb == 0:  # define new plot
-        #     ax_ph = plt.subplot2grid((2, np.unique(i_graphs).size), (1, i_graphs[i_lb]))
+        if i_lb == 0:  # define new plot
+            ax_ph = plt.subplot2grid((2, len(labels)), (1, i_lb))
         plot_phase(i_lb, lb, lb_curve, cOlors[i_lb] if single_plot else 'black', cp_arg[i_lb], None)
 
     plt.tight_layout()
+
+
+def bootstrap_variance_complex(X, n_points, n_samples):
+    """Estimate variance of tensor X along last axis using bootstrap method."""
+    # sample data uniformly
+    sampling_idx = np.random.randint(low=0, high=X.shape[-2], size=(n_samples, n_points))
+    sampled_data = X[..., sampling_idx, :]
+
+    # computes mean
+    mean = sampled_data.mean(-2).mean(-2)
+
+    # computes bootstrap variance
+    var = (cplx.modulus(sampled_data.mean(-2) - mean[..., None, :]).pow(2.0)).sum(-1) / (n_samples - 1)
+
+    return mean, var
+
+
+def error_arg(mod, err_mod):
+    return np.arctan(err_mod / mod / np.sqrt(np.clip(1 - err_mod ** 2 / mod ** 2, 1e-6, 1)))
+
+
+def plot_modulus(RXs, labels=None, theta_threshold=0.0075, fontsize=40, bootstrap=True,
+                 error_bars=True, estim_bar=False,
+                 single_plot=False):
+    if labels is not None and len(RXs) != len(labels):
+        return ValueError("Invalid number of labels")
+
+    labels = labels or [''] * len(RXs)
+    labels_here = labels
+    i_graphs = np.arange(len(labels))
+    columns = RXs[0].idx_info.columns
+    J = RXs[0].idx_info.j.max() if 'j' in columns else RXs[0].idx_info.j1.max()
+    N = RXs[0].idx_info.n1.max() + 1
+
+    cOlors = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 'red',
+              'purple', 'black',
+              'paleturquoise'] + ['orchid'] * 20
+
+    C_env = torch.zeros(len(labels_here), J - 1, J - 1, 2)
+    model_bias = torch.zeros(len(labels_here), J - 1, J - 1)
+    estim_err = torch.zeros(len(labels_here), J - 1, J - 1)
+
+    for i_lb, (RX, lb, color) in enumerate(zip(RXs, labels_here, cOlors)):
+        isturb = 'Jet' in lb
+
+        norm2 = RX.select(pivot='n1', m_type='m00', q=2, lp=False)[:, :, 0].unsqueeze(-1)  # N x J x 1
+
+        for (alpha, beta) in product(range(J - 1), range(-J + 1, 0)):
+            if alpha - beta >= J:
+                continue
+
+            # prepare covariances
+            C_env_nj = torch.zeros(N, J + beta - alpha, 2)
+            for j1 in range(alpha, J + beta):
+                coeff = RX.select(pivot='n1', m_type='m11', j1=j1, jp1=j1 - alpha, j2=j1 - beta, lp=False)[:, 0, :]
+                coeff /= norm2[:, j1, ...].pow(0.5) * norm2[:, j1 - alpha, ...].pow(0.5)
+                C_env_nj[:, j1 - alpha, :] = coeff
+
+            C_env_j = C_env_nj.mean(0)
+            C_env[i_lb, alpha, J - 1 + beta, :] = C_env_j.mean(0)
+            model_bias[i_lb, alpha, J - 1 + beta] = cplx.modulus(C_env_j - C_env_j.mean(0, keepdim=True)).pow(2.0).sum(
+                0).div(J + beta - alpha - 1).pow(0.5)
+
+            # compute estimation error
+            if bootstrap:
+                mean, var = bootstrap_variance_complex(C_env_nj.transpose(0, 1), C_env_nj.shape[0], 20000)
+                estim_err[i_lb, alpha, J - 1 + beta] = var.mean(0).pow(0.5)
+            else:
+                estim_err[i_lb, alpha, J - 1 + beta] = (cplx.modulus(C_env_nj).pow(2.0).mean(0) - cplx.modulus(
+                    C_env_nj.mean(0)).pow(2.0)) / (N - 1)
+
+    C_env, C_env_mod = cplx.to_np(C_env), np.abs(cplx.to_np(C_env))
+    model_bias, estim_err = to_numpy(model_bias), to_numpy(estim_err)
+
+    # power spectrum normalization
+    #     betas = np.arange(alpha-J+1,0)
+    betas = np.arange(-J + 1, 0)[None, :]
+    C_env_mod /= (2.0 ** betas)
+    model_bias /= (2.0 ** betas)
+    estim_err /= (2.0 ** betas)
+
+    # phase
+    C_env_arg = np.angle(C_env)
+    C_env_arg[C_env < theta_threshold] = 0.0
+
+    def plot_modulus(i_lb, lb, ax, color, y, y_err, y_err_estim):
+        for alpha in range(J - 1):
+            betas = np.arange(-J + 1 + alpha, 0)
+            if error_bars:
+                plt.errorbar(betas, y[alpha, alpha - J + 1:], yerr=y_err[alpha, :J - 1 - alpha], capsize=4)
+                if estim_bar:
+                    eb = plt.errorbar(betas + 0.05, y[alpha, alpha - J + 1:], yerr=y_err_estim[alpha, alpha - J + 1:],
+                                      capsize=4, fmt=' ')
+                    eb[-1][0].set_linestyle('--')
+            else:
+                plt.plot(betas, y[alpha, :J - 1 - alpha], color=color or 'green')
+                plt.scatter(betas, y[alpha, :J - 1 - alpha], color=color or 'green', marker='+')
+        plt.title(lb, fontsize=fontsize)
+        plt.axhline(0.0, linewidth=0.7, color='black')
+        plt.ylim(-0.02, 3.5)
+        if i_lb == 0:
+            plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+            plt.ylabel(r'$\mathrm{Modulus}$', fontsize=fontsize)
+            plt.yticks(fontsize=fontsize)
+        else:
+            plt.tick_params(labelleft=False)
+        plt.locator_params(axis='x', nbins=J - 1)
+        #     plt.xticks(np.arange(-J+1,0), [(rf'${-beta}$' if beta%2 == 1 else '') for beta in np.arange(-J+1,0)], fontsize=fontsize)
+        plt.tick_params(labelbottom=False)
+        plt.locator_params(axis='y', nbins=5)
+
+    def plot_phase(i_lb, lb, color, y, y_err):
+        for alpha in range(J - 1):
+            betas = np.arange(-J + 1 + alpha, 0)
+            plt.plot(betas, y[alpha, alpha - J + 1:], label=fr'$a={alpha}$')
+            plt.scatter(betas, y[alpha, alpha - J + 1:], marker='+')
+        plt.xticks(np.arange(-J + 1, 0), [(rf'${beta}$' if beta % 2 == 1 else '') for beta in np.arange(-J + 1, 0)],
+                   fontsize=fontsize)
+        plt.yticks(np.arange(-2, 3) * np.pi / 8,
+                   [r'$-\frac{\pi}{4}$', r'$-\frac{\pi}{8}$', r'$0$', r'$\frac{\pi}{8}$', r'$\frac{\pi}{4}$'],
+                   fontsize=fontsize)
+        plt.axhline(0.0, linewidth=0.7, color='black')
+        plt.xlabel(r'$b$', fontsize=fontsize + 10)
+        if i_lb == 0:
+            plt.ylabel(r'$\mathrm{Phase}$', fontsize=fontsize)
+        else:
+            plt.tick_params(labelleft=False)
+
+    # plt.figure(figsize=(max(len(labels),5)*5, 10))
+    plt.figure(figsize=(max(len(labels), 5) * 3, 10))
+    for i_lb, lb in enumerate(labels_here):
+        ax_mod = plt.subplot2grid((2, np.unique(i_graphs).size), (0, i_graphs[i_lb]))
+        if i_lb == 0:
+            ax_mod.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
+            ax_mod.yaxis.set_label_coords(-0.18, 0.5)
+        plot_modulus(i_lb, lb, None, cOlors[i_lb] if single_plot else 'black', C_env_mod[i_lb], model_bias[i_lb],
+                     estim_err[i_lb])
+
+    for i_lb, lb in enumerate(labels_here):
+        ax_ph = plt.subplot2grid((2, np.unique(i_graphs).size), (1, i_graphs[i_lb]))
+        plot_phase(i_lb, lb, cOlors[i_lb] if single_plot else 'black', C_env_arg[i_lb], None)
+        if i_lb == 0:
+            ax_ph.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
+
+    plt.tight_layout()
+
+    leg = plt.legend(loc='upper center', ncol=1, fontsize=35, handlelength=1.0, labelspacing=1.0,
+                     bbox_to_anchor=(1.3, 2.25, 0, 0))
+    for legobj in leg.legendHandles:
+        legobj.set_linewidth(5.0)
+
+
 

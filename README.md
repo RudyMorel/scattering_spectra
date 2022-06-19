@@ -27,18 +27,25 @@ The result is an annotated tensor, meaning a tensor of size K x 2 where K is the
 
 
 
-...
+Scattering covariance can be used to compare time-series.
 
-
-
-Here we will compare *fractional Brownian motion* (fBm) which is a Gaussian model and *multifractal random walk* (MRW) which non-Gaussian.
+Here we will compare *fractional Brownian motion* (fBm) which is a Gaussian model and *multifractal random walk* (MRW) which is non-Gaussian.
 
 ```python
-X_fbm = load_data(name='fbm', R=16, T=4096, H=0.5)
-X_mrw = load_data(name='mrw', R=16, T=4096, H=0.5, lam=0.15)
-```
+# DATA
+X_fbm = load_data(name='fbm', R=16, T=2**16, H=0.5)
+X_mrw = load_data(name='mrw', R=16, T=2**16, H=0.5, lam=0.15)
 
-See file main.py, it computes this representation for some parametrized models of time-series. 
+# ANALYSIS
+RX1 = analyze(X_fbm, J=10, high_freq=0.25, moments='cov', cuda=True)
+RX2 = analyze(X_mrw, J=10, high_freq=0.25, moments='cov', cuda=True)
+RXs = [RX1.mean('n1'), RX2.mean('n1')]  # average on realizations
+
+# VISUALIZATION
+plot_marginal_moments(RXs)
+plot_cross_phased(RXs)
+plot_modulus(RXs)
+```
 
 ## Synthesis
 
