@@ -112,10 +112,10 @@ class Scattering(SubModuleChunk):
         self.A = A
         self.N = N
 
-        self.W = Wavelet(T, J, Q, wav_type, high_freq, wav_norm, None)
+        self.W = Wavelet(T, J, Q, wav_type, high_freq, wav_norm)
 
         self.rm_high = rm_high
-        self.W_no_HF = Wavelet(self.T, 1, 1, 'battle_lemarie', 0.5, 'l1', None)
+        self.W_no_HF = Wavelet(self.T, 1, 1, 'battle_lemarie', 0.5, 'l1')
 
         self.sc_idxer = ScaleIndexer(J, Q, r)
 
