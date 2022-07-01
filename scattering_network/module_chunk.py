@@ -102,8 +102,8 @@ class ModuleChunk(nn.Module):
             # self.g_chunks = self.chunk_graph_old(self.g, nchunks)
             self.g_chunks = self.chunk_graph(self.module_list, self.g, nchunks)
             # self.time_tracker.start('compute score')
-            score_common_node = self.score_common_nodes(self.g_chunks)
-            score_memory = self.score_memory(self.g_chunks)
+            # score_common_node = self.score_common_nodes(self.g_chunks)
+            # score_memory = self.score_memory(self.g_chunks)
 
             # from chuked graphs to chunked idx_info
             # test = IdxInfo(data=[node[1] for node in self.g_chunks[0] if node[0] == f'Module:{0}'])
@@ -259,30 +259,6 @@ class ModuleChunk(nn.Module):
                 best_try = node_chunks
 
         return best_try
-
-    # def init_chunks(self, x: torch.Tensor) -> None:
-    #     """Initialize chunk dynamic in each module given its output chunks idx_info_chunked."""
-    #     output_idx_info = self.idx_info_chunked[1:]
-    #     require_norm = [module.require_normalization for module in self.module_list]
-    #     if sum(require_norm) == 0:
-    #         last_module_with_norm = 0
-    #     else:
-    #         last_module_with_norm = len(require_norm) - 1 - require_norm[::-1].index(max(require_norm))
-    #
-    #     with torch.no_grad():
-    #         for i_chunk in range(self.nchunks):
-    #
-    #             # initially, keep only the in channels required
-    #             x_start = torch.stack([x[:, n, :, :] for n in self.idx_info_chunked[0][i_chunk].to_array('n')[:, 0]], 1)
-    #
-    #             outputs = [ModelOutput(x=None, y=x_start, idx_info=self.idx_info_chunked[0][i_chunk])]
-    #
-    #             for i_module, (out_info, module) in enumerate(zip(output_idx_info, self.module_list)):
-    #                 module.init_one_chunk(outputs[-1], out_info[i_chunk], i_chunk)
-    #                 if i_module < last_module_with_norm:
-    #                     outputs.append(module.forward_chunk(outputs[-1].y, i_chunk))
-    #                 else:
-    #                     outputs.append(ModelOutput(x=None, y=None, idx_info=out_info[i_chunk]))
 
     def init_chunks(self) -> None:
         """Initialize chunk dynamic in each module given its output chunks idx_info_chunked."""

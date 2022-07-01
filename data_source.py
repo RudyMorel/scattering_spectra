@@ -1,10 +1,11 @@
 from typing import *
 from collections import OrderedDict
-from mpire import WorkerPool
+from functools import partial
+from multiprocessing import Pool
 import shutil
 import numpy as np
 
-from stochastic_classical_models import fbm, mrw, skewed_mrw, poisson_mu, geom_brownian
+from stochastic_classical_models import fbm, mrw, skewed_mrw, poisson_mu
 from global_const import *
 
 
@@ -91,7 +92,7 @@ class ProcessDataLoader:
     def generate_trajectory(self, **kwargs) -> np.ndarray:
         pass
 
-    def worker(self, **kwargs) -> None:
+    def worker(self, i: Any, **kwargs) -> None:
         np.random.seed(None)
         try:
             X = self.generate_trajectory(**kwargs)
@@ -102,13 +103,12 @@ class ProcessDataLoader:
             return
 
     def generate(self, dirpath, R_gen, **kwargs) -> dict:
+        print(f"{self.model_name}: generating data.")
         kwargs_gen = {key: value for key, value in kwargs.items() if key != 'R'}
-        inputs = [{**kwargs_gen, **{'dirpath': dirpath}}] * R_gen
 
-        results = []
-        with WorkerPool(n_jobs=1 if str(CODE_PATH)[0] == 'C' else 16) as pool:
-            for result in pool.imap_unordered(self.worker, inputs, progress_bar=True):
-                results.append(result)
+        # multiprocess generation
+        pool = Pool(8)
+        pool.map(partial(self.worker, **{**kwargs_gen, **{'dirpath': dirpath}}), [0] * R_gen)
 
         return kwargs
 

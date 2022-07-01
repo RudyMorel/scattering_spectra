@@ -1,11 +1,86 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from kymatio.scattering1d.backend.torch_backend import fft
-from kymatio.scattering1d import filter_bank as fb
 
 import utils.complex_utils as cplx
 import scattering_network.filter_bank as lfb
+
+
+class FFT:
+    def __init__(self, fft, ifft, irfft, type_checks):
+        self.fft = fft
+        self.ifft = ifft
+        self.irfft = irfft
+        self.sanity_checks = type_checks
+
+    def fft_forward(self, x, direction='C2C', inverse=False):
+        """Interface with FFT routines for any dimensional signals and any backend signals.
+
+            Example (for Torch)
+            -------
+            x = torch.randn(128, 32, 32, 2)
+            x_fft = fft(x)
+            x_ifft = fft(x, inverse=True)
+
+            Parameters
+            ----------
+            x : input
+                Complex input for the FFT.
+            direction : string
+                'C2R' for complex to real, 'C2C' for complex to complex.
+            inverse : bool
+                True for computing the inverse FFT.
+                NB : If direction is equal to 'C2R', then an error is raised.
+
+            Raises
+            ------
+            RuntimeError
+                In the event that we are going from complex to real and not doing
+                the inverse FFT or in the event x is not contiguous.
+
+
+            Returns
+            -------
+            output :
+                Result of FFT or IFFT.
+        """
+        if direction == 'C2R':
+            if not inverse:
+                raise RuntimeError('C2R mode can only be done with an inverse FFT.')
+
+        self.sanity_checks(x)
+
+        if direction == 'C2R':
+            output = self.irfft(x)
+        elif direction == 'C2C':
+            if inverse:
+                output = self.ifft(x)
+            else:
+                output = self.fft(x)
+        else:
+            raise ValueError("Unrecognized direction in fft.")
+
+        return output
+
+    def __call__(self, x, direction='C2C', inverse=False):
+        return self.fft_forward(x, direction=direction, inverse=inverse)
+
+
+def _is_complex(x):
+    return x.shape[-1] == 2
+
+
+def type_checks(x):
+    if not _is_complex(x):
+        raise TypeError('The input should be complex (i.e. last dimension is 2).')
+
+    if not x.is_contiguous():
+        raise RuntimeError('Tensors must be contiguous.')
+
+
+fft = FFT(lambda x: torch.view_as_real(torch.fft.fft(torch.view_as_complex(x))),
+          lambda x: torch.view_as_real(torch.fft.ifft(torch.view_as_complex(x))),
+          lambda x: torch.fft.ifft(torch.view_as_complex(x)).real, type_checks)
 
 
 def fft1d_c2c(x):
@@ -80,10 +155,9 @@ class Wavelet(TimeConvolutionReflectionPad):
     """
     Wavelet operator.
     """
-    def __init__(self, T, J, Q, wav_type, high_freq, wav_norm, pad):
+    def __init__(self, T, J, Q, wav_type, high_freq, wav_norm):
 
         self.T, self.J, self.Q = T + T, J, Q
-        # self.T, self.J, self.Q = T + T - 2, J, Q
         self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
 
         self.xi, self.sigma = None, None
@@ -119,16 +193,18 @@ class Wavelet(TimeConvolutionReflectionPad):
 
         # initialize wavelets
         if self.wav_type == "morlet":
-            psi_hat = [fb.morlet_1d(self.T, xi, sigma, normalize=self.wav_norm) for xi, sigma in zip(self.xi, self.sigma)]
+            psi_hat = [lfb.morlet_1d(self.T, xi, sigma, self.wav_norm) for xi, sigma in zip(self.xi, self.sigma)]
         elif self.wav_type == "battle_lemarie":
-            psi_hat = [lfb.battle_lemarie_psi(self.T, self.Q, xi, normalize=self.wav_norm) for xi in self.xi]
+            psi_hat = [lfb.battle_lemarie_psi(self.T, self.Q, xi, self.wav_norm) for xi in self.xi]
             # psi_hat[]
         elif self.wav_type == "bump_steerable":
-            psi_hat = [lfb.bump_steerable_psi(self.T, 1, xi) / np.sqrt(self.Q) for xi in self.xi]
+            psi_hat = [lfb.bump_steerable_psi(self.T, xi) / np.sqrt(self.Q) for xi in self.xi]
         elif self.wav_type == 'meyer':
             psi_hat = [lfb.meyer_psi(self.T, 1, xi) for xi in self.xi]
         elif self.wav_type == 'shannon':
-            psi_hat = [lfb.shannon_psi(self.T, self.Q, xi, sigma) for xi, sigma in zip(self.xi, self.sigma)]
+            psi_hat = [lfb.shannon_psi(self.T, xi, sigma) for xi, sigma in zip(self.xi, self.sigma)]
+        else:
+            raise ValueError("Unrecognized wavelet type.")
         psi_hat = np.stack(psi_hat, axis=0)
 
         # some high frequency wavelets have strange behavior at negative low frequencies
@@ -146,7 +222,7 @@ class Wavelet(TimeConvolutionReflectionPad):
         if self.wav_type == "morlet":
             sigma_low = self.sigma[-1]
             np.append(self.sigma, lfb.compute_morlet_low_pass_parameters(self.J, self.Q, self.high_freq))
-            phi_hat = fb.gauss_1d(self.T, sigma_low)
+            phi_hat = lfb.gauss_1d(self.T, sigma_low)
         elif self.wav_type == "battle_lemarie":
             xi_low = self.xi[-2]  # Because 0 was appended for Morlet
             # phi_hat = lfb.battle_lemarie_phi(2*self.T, self.Q, xi_low)
@@ -156,13 +232,13 @@ class Wavelet(TimeConvolutionReflectionPad):
             phi_hat = lfb.bump_steerable_phi(self.T, 1, xi_low)
         elif self.wav_type == 'meyer':
             xi_low = self.xi[-2]
-            phi_hat = lfb.meyer_phi(self.T, 1, xi_low)
+            phi_hat = lfb.meyer_phi(self.T, xi_low)
         elif self.wav_type == 'shannon':
             sigma_low = self.xi[-2] - self.sigma[-1]
             phi_hat = lfb.shannon_phi(self.T, sigma_low)
+        else:
+            raise ValueError("Unrecognized wavelet type.")
 
         # pytorch parameter
         phi_hat = cplx.from_np(phi_hat).unsqueeze(0)
         return phi_hat
-
-

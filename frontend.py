@@ -110,7 +110,7 @@ def compute_scattering_normalization(xf_torch, J, Q, wav_type, high_freq, wav_no
 
 
 def analyze(X, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-            rm_high=False, moments='covstat', m_types=['m00', 'm10', 'm11'], nchunks=None,
+            rm_high=False, moments='covstat', m_types=None, nchunks=None,
             cuda=False):
     """Compute sigma^2(j).
     :param X: a R x T array
@@ -122,13 +122,14 @@ def analyze(X, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=
     :param rm_high: preprocess data by doing a high pass filter
     :param moments: the type of moments to compute
     :param m_types: m00: sigma^2 and s^2, m10: cp, m11: cm
-    :param normalize: normalize, wether first wavelet layer
     :param nchunks: nb of chunks, increase it to reduce memory usage
 
     :return: a ModelOutput result
     """
     R, T = X.shape
 
+    if m_types is None:
+        m_types = ['m00', 'm10', 'm11']
     if J is None:
         J = int(np.log2(T)) - 3
 
@@ -206,10 +207,27 @@ def bootstrap_variance_complex(X, n_points, n_samples):
 
 
 def error_arg(mod, err_mod):
+    """Obtain error on complex phase from error on modulus."""
     return np.arctan(err_mod / mod / np.sqrt(np.clip(1 - err_mod ** 2 / mod ** 2, 1e-6, 1)))
 
 
-def plot_marginal_moments(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, errorbars=False, estim_bar=False):
+def plot_marginal_moments(RXs, estim_bar=False, self_simi_bar=False,
+                          labels=None, linewidth=3.0, fontsize=30, offset=0, axes=None):
+    """
+    Plot the marginal moments
+        - (wavelet power spectrum) sigma^2(j)
+        - (sparsity factors) s^2(j)
+
+    :param RXs: ModelOutput or list of ModelOutput
+    :param estim_bar: display estimation error due to estimation on several realizations
+    :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
+    :param labels: list of labels for each model output
+    :param linewidth: curve linewidth
+    :param fontsize: labels fontsize
+    :param offset: wether to start at j=0 (mother wavelet) or j=offset
+    :param axes: custom axes: array of size 2
+    :return:
+    """
     if isinstance(RXs, ModelOutput):
         RXs = [RXs]
     if labels is not None and len(RXs) != len(labels):
@@ -231,7 +249,7 @@ def plot_marginal_moments(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0
         m1_nj = torch.log2(cplx.real(WX1))
         m2_nj = torch.log2(cplx.real(WX2))
         ms_nj = 2 * m1_nj - m2_nj
-        if errorbars:
+        if self_simi_bar:
             # marginal moments
             Cmarginal[i_lb, 0, :] = m1_nj.mean(0)
             Cmarginal[i_lb, 1, :] = m2_nj.mean(0)
@@ -246,37 +264,42 @@ def plot_marginal_moments(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0
             Cmarginal[i_lb, 1, :] = 2 ** (m2_nj.mean(0))
             Cmarginal[i_lb, 2, :] = 2 ** (ms_nj.mean(0))
 
-    if errorbars:
+    if self_simi_bar:
         Cmarginal += 2 * np.arange(len(labels))[:, None, None]
-
     else:
         Cmarginal[:, :2, :] /= Cmarginal[:, :2, -1:]
 
     # PLOT 1 sigma^2
-    plt.figure(figsize=(20, 10))
-    plt.subplot2grid((1, 2), (0, 0))
+    if axes is None:
+        plt.figure(figsize=(20, 10))
+        plt.subplot2grid((1, 2), (0, 0))
+    else:
+        plt.sca(axes[0])
     js = np.arange(offset, Cmarginal.shape[-1])
     for i_lb, lb in enumerate(labels_here):
-        if errorbars:
+        if self_simi_bar:
             plt.errorbar(-js, Cmarginal[i_lb, 1, offset:], yerr=estim_error[i_lb, 1, offset:], label=lb, capsize=4)
         else:
             plt.plot(-js, Cmarginal[i_lb, 1, offset:], label=lb, linewidth=linewidth)
             plt.scatter(-js, Cmarginal[i_lb, 1, offset:], marker='+', s=200, linewidth=linewidth)
-    if not errorbars:
+    if not self_simi_bar:
         plt.yscale('log', base=2)
     plt.xlabel(r'$-j$', fontsize=fontsize + 30)
     plt.yticks(fontsize=fontsize)
     plt.xticks(-js, [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
 
     # PLOT 2 sparsity^2
-    plt.subplot2grid((1, 2), (0, 1))
+    if axes is None:
+        plt.subplot2grid((1, 2), (0, 1))
+    else:
+        plt.sca(axes[1])
     for i_lb, lb in enumerate(labels_here):
-        if errorbars:
+        if self_simi_bar:
             plt.errorbar(-js, Cmarginal[i_lb, 2, offset:], yerr=estim_error[i_lb, 2, offset:], label=lb, capsize=4)
         else:
             plt.plot(-js, Cmarginal[i_lb, 2, offset:], label=lb, linewidth=linewidth)
             plt.scatter(-js, Cmarginal[i_lb, 2, offset:], marker='+', s=200, linewidth=linewidth)
-    if not errorbars:
+    if not self_simi_bar:
         plt.yscale('log', base=2)
         plt.ylim(2 ** (-4), 1.0)
     plt.xlabel(r'$-j$', fontsize=fontsize + 30)
@@ -284,18 +307,32 @@ def plot_marginal_moments(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0
     plt.xticks(-js, [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
 
 
-def plot_cross_phased(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, error_bars=False, estim_bars=False,
-                      theta_threshold=0.0075, single_plot=False):
+def plot_cross_phased(RXs, estim_bar=False, self_simi_bar=False,
+                      labels=None, phase_threshold=0.0075, fontsize=30, single_plot=False, ylim=0.09, axes=None):
+    """
+    Plot the phase-envelope cross-spectrum C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
+
+    :param RXs: ModelOutput or list of ModelOutput
+    :param estim_bar: display estimation error due to estimation on several realizations
+    :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
+    :param labels: list of labels for each model output
+    :param phase_threshold: rules phase instability
+    :param fontsize: labels fontsize
+    :param single_plot: output all ModelOutput on a single plot
+    :param ylim: above y limit of modulus graph
+    :param axes: custom axes: array of size 2
+    :return:
+    """
     if isinstance(RXs, ModelOutput):
         RXs = [RXs]
     if labels is not None and len(RXs) != len(labels):
         raise ValueError("Invalid number of labels")
-    if estim_bars:
+    if estim_bar:
         raise ValueError("Estim error plot not yet supported.")
 
     labels = labels or [''] * len(RXs)
     labels_here = labels
-    labels_curve = ['']
+    labels_curve = [''] * len(labels)
     columns = RXs[0].idx_info.columns
     J = RXs[0].idx_info.j.max() if 'j' in columns else RXs[0].idx_info.j1.max()
 
@@ -321,7 +358,7 @@ def plot_cross_phased(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, er
             cp[i_lb, alpha - 1, :] = cp_nj.mean(0).mean(0)
             cp_err_j = (cplx.modulus(cp_nj).pow(2.0).mean(0) - cplx.modulus(cp_nj.mean(0)).pow(2.0)) / N
             err_mod[i_lb, alpha - 1] = cp_err_j.mean(0).pow(0.5)
-            if not error_bars:
+            if not self_simi_bar:
                 err_mod[i_lb, alpha - 1] = 0.0
                 err_estim[i_lb, alpha - 1] = 0.0
 
@@ -329,26 +366,26 @@ def plot_cross_phased(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, er
     err_mod, err_estim, err_arg = to_numpy(err_mod), to_numpy(err_estim), error_arg(cp_mod, to_numpy(err_mod))
 
     # phase instability at z=0
-    cp_arg[cp_mod < theta_threshold] = 0.0
-    err_arg[cp_mod < theta_threshold] = 0.0
+    cp_arg[cp_mod < phase_threshold] = 0.0
+    err_arg[cp_mod < phase_threshold] = 0.0
 
     cp_arg = np.abs(cp_arg)
 
-    def plot_modulus(i_lb, lb, lb_curve, ax, color, y, y_err, y_err_estim):
+    def plot_modulus(i_lb, lb, lb_curve, color, y, y_err, y_err_estim):
         alphas = np.arange(1, J)
-        if error_bars:
+        if self_simi_bar:
             plt.errorbar(alphas, y, yerr=y_err, capsize=4, color=color,
                          linestyle=(0, (5, 5)) if 'standard' in lb_curve else '-', label=lb_curve)
-            if estim_bars:
+            if estim_bar:
                 eb = plt.errorbar(alphas + 0.05, y, yerr=y_err_estim, capsize=4, color=color, fmt=' ')
                 eb[-1][0].set_linestyle('--')
         else:
             plt.plot(alphas, y, color=color or 'green', label=lb_curve)
             plt.scatter(alphas, y, color=color or 'green', marker='+')
-        plt.title(lb, fontsize=fontsize)
-        plt.axhline(0.0, linewidth=0.7, color='black')
-        plt.ylim(-0.02, 0.09)
         if i_lb == 0:
+            plt.axhline(0.0, linewidth=0.7, color='black')
+            plt.ylim(-0.02, ylim)
+            plt.title(lb, fontsize=fontsize)
             plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
             plt.ylabel(r'$\mathrm{Modulus}$', fontsize=fontsize)
             plt.yticks(fontsize=fontsize)
@@ -357,7 +394,7 @@ def plot_cross_phased(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, er
         plt.tick_params(labelbottom=False)
         plt.locator_params(axis='y', nbins=5)
 
-    def plot_phase(i_lb, lb, lb_curve, color, y, y_err):
+    def plot_phase(i_lb, lb_curve, color, y):
         alphas = np.arange(1, J)
         plt.plot(alphas, y, color=color, linestyle=(0, (5, 5)) if 'standard' in lb_curve else '-', label=lb_curve)
         plt.scatter(alphas, y, color=color, marker='+')
@@ -371,25 +408,42 @@ def plot_cross_phased(RXs, labels=None, linewidth=3.0, fontsize=30, offset=0, er
         else:
             plt.tick_params(labelleft=False)
 
-    plt.figure(figsize=(5, 10) if single_plot else (len(labels) * 5, 10))
+    if axes is None:
+        plt.figure(figsize=(5, 10) if single_plot else (len(labels) * 5, 10))
+        ax_mod = plt.subplot2grid((2, 1), (0, 0))
+        ax_mod.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
+    else:
+        plt.sca(axes[0])
     for i_lb, (lb, lb_curve) in enumerate(zip(labels_here, labels_curve)):
-        ax_mod = plt.subplot2grid((2, len(labels)), (0, i_lb))
-        if i_lb == 0:
-            ax_mod.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
-        plot_modulus(i_lb, lb, lb_curve, None, COLORS[i_lb] if single_plot else 'black', cp_mod[i_lb], err_mod[i_lb],
+        plot_modulus(i_lb, lb, lb_curve, COLORS[i_lb], cp_mod[i_lb], err_mod[i_lb],
                      err_estim[i_lb])
-        # tx = ax_mod.yaxis.get_offset_text().set_fontsize(fontsize - 20)
 
+    if axes is None:
+        plt.subplot2grid((2, 1), (1, 0))
+    else:
+        plt.sca(axes[1])
     for i_lb, (lb, lb_curve) in enumerate(zip(labels_here, labels_curve)):
-        if i_lb == 0:  # define new plot
-            ax_ph = plt.subplot2grid((2, len(labels)), (1, i_lb))
-        plot_phase(i_lb, lb, lb_curve, COLORS[i_lb] if single_plot else 'black', cp_arg[i_lb], None)
-
-    plt.tight_layout()
+        plot_phase(i_lb, lb_curve, COLORS[i_lb], cp_arg[i_lb])
+    if axes is None:
+        plt.tight_layout()
 
 
-def plot_modulus(RXs, labels=None, theta_threshold=0.0075, fontsize=40, ylim=3.5, bootstrap=True,
-                 error_bars=False, estim_bar=False):
+def plot_modulus(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True,
+                 labels=None, phase_threshold=0.0075, fontsize=40, ylim=3.5, axes=None):
+    """
+    Plot the scattering cross-spectrum C_S(a,b) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
+
+    :param RXs: ModelOutput or list of ModelOutput
+    :param estim_bar: display estimation error due to estimation on several realizations
+    :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
+    :param bootstrap: use boostrap for estimation error
+    :param labels: list of labels for each model output
+    :param phase_threshold: rules phase instability
+    :param fontsize: labels fontsize
+    :param ylim: above y limit of modulus graph
+    :param axes: custom axes: array of size 2 x labels
+    :return:
+    """
     if isinstance(RXs, ModelOutput):
         RXs = [RXs]
     if labels is not None and len(RXs) != len(labels):
@@ -405,7 +459,7 @@ def plot_modulus(RXs, labels=None, theta_threshold=0.0075, fontsize=40, ylim=3.5
     else:
         raise ValueError("Unrecognized model type.")
 
-    if error_bars and model_type == 'covstat':
+    if self_simi_bar and model_type == 'covstat':
         raise ValueError("Impossible to output self-similarity error on covstat model. Use a cov model instead.")
 
     labels = labels or [''] * len(RXs)
@@ -463,12 +517,12 @@ def plot_modulus(RXs, labels=None, theta_threshold=0.0075, fontsize=40, ylim=3.5
 
     # phase
     C_env_arg = np.angle(C_env)
-    C_env_arg[C_env < theta_threshold] = 0.0
+    C_env_arg[C_env < phase_threshold] = 0.0
 
     def plot_modulus(i_lb, lb, y, y_err, y_err_estim):
         for alpha in range(J - 1):
             betas = np.arange(-J + 1 + alpha, 0)
-            if error_bars:
+            if self_simi_bar:
                 plt.errorbar(betas, y[alpha, alpha:], yerr=y_err[alpha, alpha:], capsize=4)
                 if estim_bar:
                     eb = plt.errorbar(betas + 0.05, y[alpha, alpha:], yerr=y_err_estim[alpha, alpha:],
@@ -507,23 +561,33 @@ def plot_modulus(RXs, labels=None, theta_threshold=0.0075, fontsize=40, ylim=3.5
         else:
             plt.tick_params(labelleft=False)
 
-    plt.figure(figsize=(max(len(labels), 5) * 3, 10))
+    if axes is None:
+        plt.figure(figsize=(max(len(labels), 5) * 3, 10))
     for i_lb, lb in enumerate(labels_here):
-        ax_mod = plt.subplot2grid((2, np.unique(i_graphs).size), (0, i_graphs[i_lb]))
+        if axes is not None:
+            plt.sca(axes[0, i_lb])
+            ax_mod = axes[0, i_lb]
+        else:
+            ax_mod = plt.subplot2grid((2, np.unique(i_graphs).size), (0, i_graphs[i_lb]))
         if i_lb == 0:
             ax_mod.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
             ax_mod.yaxis.set_label_coords(-0.18, 0.5)
         plot_modulus(i_lb, lb, C_env_mod[i_lb], model_bias[i_lb], estim_err[i_lb])
 
     for i_lb, lb in enumerate(labels_here):
-        ax_ph = plt.subplot2grid((2, np.unique(i_graphs).size), (1, i_graphs[i_lb]))
+        if axes is not None:
+            plt.sca(axes[1, i_lb])
+            ax_ph = axes[1, i_lb]
+        else:
+            ax_ph = plt.subplot2grid((2, np.unique(i_graphs).size), (1, i_graphs[i_lb]))
         plot_phase(i_lb, C_env_arg[i_lb])
         if i_lb == 0:
             ax_ph.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
 
-    plt.tight_layout()
+    if axes is None:
+        plt.tight_layout()
 
-    leg = plt.legend(loc='upper center', ncol=1, fontsize=35, handlelength=1.0, labelspacing=1.0,
-                     bbox_to_anchor=(1.3, 2.25, 0, 0))
-    for legobj in leg.legendHandles:
-        legobj.set_linewidth(5.0)
+        leg = plt.legend(loc='upper center', ncol=1, fontsize=35, handlelength=1.0, labelspacing=1.0,
+                         bbox_to_anchor=(1.3, 2.25, 0, 0))
+        for legobj in leg.legendHandles:
+            legobj.set_linewidth(5.0)

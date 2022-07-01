@@ -47,7 +47,7 @@ plot_cross_phased(RXs)
 plot_modulus(RXs)
 ```
 
-## Synthesis
+## Generation
 
 ...
 

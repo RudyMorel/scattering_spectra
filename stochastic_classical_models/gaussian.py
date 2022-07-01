@@ -5,11 +5,11 @@ from numpy.random import normal as nd
 
 def gaussian_cme(cov, R, T):
     """
-    Create S synthesis of a gaussian process of length T with the specified
+    Create R syntheses of a gaussian process of length T with the specified
     autocovariance through circulant matrix embedding (see C. R. Dietrich AND G. N. Newsam).
 
     :param cov: T array, function r such that Cov[Y(x)Y(y)] = r(|x-y|)
-    :param: S: int, number of synthesis
+    :param: R: int, number of synthesis
     :param T: int, number of samples
     """
 
@@ -30,23 +30,6 @@ def gaussian_cme(cov, R, T):
     x = x[:, :T]
 
     return x
-
-
-def powerSpectrumNormalization(x, K):
-    """
-    A function that enables the TS x to match the power spectrum K by convolution
-
-    :param x: The vector to normalize
-    :param K: The targeted power spectrum
-    :return: The vector x\circ kappa with same spectrum as K
-    """
-    Kfft = np.fft.fft(K)
-    xfft = np.fft.fft(x)
-
-    discrepancy = np.divide(np.abs(Kfft), np.abs(xfft))
-    x_normalized_fft = np.multiply(xfft, discrepancy)
-
-    return np.fft.ifft(x_normalized_fft).real
 
 
 def fbm(R, T, H, sigma=1, dt=None):

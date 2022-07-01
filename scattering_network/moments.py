@@ -79,8 +79,8 @@ class Cov(SubModuleChunk):
 
     def external_surjection_aux(self, row: NamedTuple) -> List[NamedTuple]:
         n, r, sc, *js, a, lp = row
-        out_columns = ['n1', 'n2', 'q', 'r1', 'r2', 'sc1', 'sc2'] + [f'j{r}' for r in range(1, self.r_max + 1)] \
-                      + [f'jp{r}' for r in range(1, self.r_max + 1)] + ['a1', 'a2', 're', 'lp', 'm_type']
+        out_columns = ['n1', 'n2', 'q', 'r1', 'r2', 'sc1', 'sc2'] + [f'j{r}' for r in range(1, self.r_max + 1)] + \
+                      [f'jp{r}' for r in range(1, self.r_max + 1)] + ['a1', 'a2', 're', 'lp', 'm_type']
 
         output_idxinfo_l = []
 

@@ -35,7 +35,7 @@ class MSELossCov(nn.Module):
         super(MSELossCov, self).__init__()
         self.max_gap = {}
 
-    def forward(self, input, target, weights_gap, weights_l2):
+    def forward(self, input, target):
         gap = torch.zeros_like(target.y)
 
         # exp

@@ -118,7 +118,7 @@ class ModelOutput:  # todo : should inherit both tensor and idxinfo ?
     def size(self) -> int:
         return self.idx_info.size()
 
-    #TODO: renamne pivot -> stack
+    # TODO: renamne pivot -> stack
     def select(self, mask: Optional[np.ndarray[bool]] = None, pivot: Optional[str] = None, **kwargs) -> torch.tensor:
         if pivot is None:
             mask = self.idx_info.where(**kwargs) if mask is None else mask
@@ -173,7 +173,8 @@ class ModelOutput:  # todo : should inherit both tensor and idxinfo ?
         return ModelOutput(None if self.x is None else self.x.cpu(), self.y.cpu(), self.idx_info)
 
     def cuda(self, device=None) -> ModelOutput:
-        return ModelOutput(None if self.x is None else self.x.cuda(device=device), self.y.cuda(device=device), self.idx_info)
+        return ModelOutput(None if self.x is None else self.x.cuda(device=device),
+                           self.y.cuda(device=device), self.idx_info)
 
     def __repr__(self) -> str:
         return self.idx_info.__repr__()
