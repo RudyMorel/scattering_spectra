@@ -78,12 +78,26 @@ class ProcessDataLoader:
     def mkdir(self) -> None:
         self.dir_name.mkdir(parents=True, exist_ok=True)
 
+    # kept for compatibility reason
+    def dirpath_old(self, **kwargs) -> Path:
+        def format_path(value):
+            if isinstance(value, str):
+                return f"_{value}"
+            if isinstance(value, dict):
+                return "".join([format_path(v) for (k, v) in value.items()])
+            else:
+                return f"_{value:.1e}"
+        fname = self.model_name + format_path(kwargs)
+        return self.dir_name / fname
+
     def dirpath(self, **kwargs) -> Path:
         def format_path(value):
             if isinstance(value, str):
                 return f"_{value}"
             if isinstance(value, dict):
                 return "".join([format_path(v) for (k, v) in value.items()])
+            if isinstance(value, int):
+                return f"_{value}"
             else:
                 return f"_{value:.1e}"
         fname = self.model_name + format_path(kwargs)
@@ -120,6 +134,9 @@ class ProcessDataLoader:
             if key in self.default_kwargs:
                 full_kwargs[key] = value
         dirpath = self.dirpath(**{key: value for (key, value) in full_kwargs.items() if key != 'R'})
+        dirpath_old = self.dirpath_old(**{key: value for (key, value) in full_kwargs.items() if key != 'R'})
+        if dirpath_old.is_dir():
+            dirpath = dirpath_old
         if len(str(dirpath)) > 255:
             raise ValueError("Path is too long.")
 

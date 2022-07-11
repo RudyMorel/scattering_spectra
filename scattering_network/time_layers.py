@@ -1,9 +1,14 @@
+from collections import namedtuple
 import numpy as np
 import torch
 import torch.nn as nn
+from packaging import version
 
 import utils.complex_utils as cplx
-import scattering_network.filter_bank as lfb
+from utils import multid_where_np
+from scattering_network.filter_bank import init_band_pass, init_low_pass
+from scattering_network.module_chunk import SubModuleChunk
+from scattering_network.described_tensor import Description, DescribedTensor
 
 
 class FFT:
@@ -78,9 +83,15 @@ def type_checks(x):
         raise RuntimeError('Tensors must be contiguous.')
 
 
-fft = FFT(lambda x: torch.view_as_real(torch.fft.fft(torch.view_as_complex(x))),
-          lambda x: torch.view_as_real(torch.fft.ifft(torch.view_as_complex(x))),
-          lambda x: torch.fft.ifft(torch.view_as_complex(x)).real, type_checks)
+if version.parse(torch.__version__) >= version.parse('1.8'):
+    fft = FFT(lambda x: torch.view_as_real(torch.fft.fft(torch.view_as_complex(x))),
+              lambda x: torch.view_as_real(torch.fft.ifft(torch.view_as_complex(x))),
+              lambda x: torch.fft.ifft(torch.view_as_complex(x)).real, type_checks)
+else:
+    fft = FFT(lambda x: torch.fft(x, 1, normalized=False),
+              lambda x: torch.ifft(x, 1, normalized=False),
+              lambda x: torch.irfft(x, 1, normalized=False, onesided=False),
+              type_checks)
 
 
 def fft1d_c2c(x):
@@ -120,125 +131,90 @@ class ReflectionPad(Pad1d):
         # return torch.cat([x, torch.flip(x[..., 1:-1, :], dims=(-2,))], dim=-2)
 
     def unpad(self, x):
-        # return torch.split(x, self.T, dim=-2)[0]
         return x[..., :self.T, :]
 
 
-class TimeConvolutionPadding(nn.Module):
-    def __init__(self, psi_hat, phi_hat, Pad):
-        super(TimeConvolutionPadding, self).__init__()
-        self.register_buffer('filt_hat', torch.cat([psi_hat, phi_hat, phi_hat], dim=0))
-        self.Pad = Pad
+class Wavelet(SubModuleChunk):
+    """
+    Wavelet operator.
+    """
+    def __init__(self, T, J, Q, wav_type, high_freq, wav_norm, layer_r, sc_idxer):
+        # TODO: implement normalization as a separate layer
+        # TODO: implement low pass filter as a separate layer
+        super(Wavelet, self).__init__()
+        self.T, self.J, self.Q, self.layer_r = 2 * T, J, Q, layer_r
+        self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
+        self.sc_idxer = sc_idxer
 
-    def forward(self, x, idx):
+        psi_hat = init_band_pass(wav_type, self.T, J, Q, high_freq, wav_norm)
+        phi_hat = init_low_pass(wav_type, self.T, J, Q, high_freq)
+        self.filt_hat = nn.Parameter(cplx.from_np(np.concatenate([psi_hat, phi_hat[None, :]])), requires_grad=False)
+        self.Pad = ReflectionPad(T)
+
+        # params
+        self.masks = []
+        self.sc_pairing = []
+
+    def external_surjection_aux(self, input_idx_info):
+        """Return IdxInfo which depends on row to be computed."""
+        n, r, sc, *js, a, low = input_idx_info
+        idx_info_l = []
+        out_columns = ['n1', 'r', 'sc'] + [f'j{r}' for r in range(1, self.sc_idxer.r_max + 1)] + ['a', 'low']
+
+        # from path j1, ..., j{r-1} associate all paths j1, ..., j{r-1}, jr
+        for jrp1 in range(0 if r == 0 else js[r-1] + 1, self.sc_idxer.JQ() + 1):
+            row = [-1] * (5 + self.sc_idxer.r_max)  # todo: replace -1 values with None
+
+            js_here = self.sc_idxer.idx_to_path(sc)
+            js_here += (jrp1, )
+
+            # n, r, sc
+            row[:3] = n, self.layer_r, self.sc_idxer.path_to_idx(js_here)
+
+            # js
+            row[3: 3 + self.layer_r] = js_here
+
+            # a, low
+            row[-2:] = a, jrp1 == self.sc_idxer.JQ()  # todo: is it the correct phase "a" to assign ?
+
+            idx_info_l.append(namedtuple('IdxInfo', out_columns)(*row))
+
+        return idx_info_l
+
+    def internal_surjection(self, row):
+        """From output_idx_info return the idxinfos that depend on output_idx_info to be computed."""
+        return []
+
+    def init_one_chunk(self, input: DescribedTensor, output_idx_info: Description, i_chunk: int) -> None:
+        """Init the parameters of the model required to compute output_idx_info from input_idx_info."""
+        columns_previous_layer = ['n1'] + [f'j{r}' for r in range(1, self.layer_r)]
+        n_j1 = output_idx_info.to_array(columns_previous_layer)
+        sc_pairing_left = multid_where_np(n_j1, input.idx_info.to_array(columns_previous_layer))
+        sc_pairing_right = output_idx_info.to_array([f'j{self.layer_r}'])[:, 0]
+        sc_pairing = np.stack([sc_pairing_left, sc_pairing_right], axis=1)
+
+        self.sc_pairing.append(sc_pairing)
+
+    def clear_params(self) -> None:
+        self.sc_pairing = []
+
+    def forward_chunk(self, x, i_chunk):
         """
         Performs in Fourier the convolution x * psi_lam.
 
         :param x: (C) x Jr x A x T x 2 tensor
-        :param idx: CJ x 2 array
         :return: J{r+1} x T x 2 tensor
         """
+        idx_info = self.idx_info[i_chunk]
+        pairing = self.sc_pairing[i_chunk]
+
+        if self.layer_r > 1:  # todo: implement modulus as a layer
+            x = cplx.from_real(cplx.modulus(x))
+
         # since idx[:,0] is always lower than x_pad.shape[2], doing fft in second is always optimal
         x_pad = self.Pad.pad(x)
         x_hat = fft1d_c2c(x_pad)
-        x_filt_hat = cplx.mul(x_hat[..., idx[:, 0], :, :, :], self.filt_hat[idx[:, 1], :, :].unsqueeze(-3))
+        x_filt_hat = cplx.mul(x_hat[..., pairing[:, 0], :, :], self.filt_hat[pairing[:, 1], :, :])
         x_filt = self.Pad.unpad(ifft1d_c2c_normed(x_filt_hat))
-        return x_filt
 
-
-class TimeConvolutionReflectionPad(TimeConvolutionPadding):
-    def __init__(self, T, psi_hat, phi_hat):
-        super(TimeConvolutionReflectionPad, self).__init__(psi_hat, phi_hat, ReflectionPad(T))
-
-
-class Wavelet(TimeConvolutionReflectionPad):
-    """
-    Wavelet operator.
-    """
-    def __init__(self, T, J, Q, wav_type, high_freq, wav_norm):
-
-        self.T, self.J, self.Q = T + T, J, Q
-        self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
-
-        self.xi, self.sigma = None, None
-        psi_hat, phi_hat = self.init_band_pass(), self.init_low_pass()
-
-        super(Wavelet, self).__init__(T, psi_hat, phi_hat)
-
-    def init_band_pass(self):
-        Q = self.Q
-        high_freq = self.high_freq
-
-        # initialize wavelet parameters
-        if self.wav_type == 'morlet':
-            xi, sigma = lfb.compute_morlet_parameters(self.J, self.Q, high_freq)
-        elif self.wav_type == 'battle_lemarie':
-            # if Q != 1:
-            #     print("\nWarning: width of Battle-Lemarie wavelets not adaptative with Q.\n")
-            xi, sigma = lfb.compute_battle_lemarie_parameters(self.J, self.Q, high_freq=high_freq)
-        elif self.wav_type == 'bump_steerable':
-            if Q != 1:
-                print("\nWarning: width of Bump-Steerable wavelets not adaptative with Q.\n")
-            xi, sigma = lfb.compute_bump_steerable_parameters(self.J, self.Q, high_freq=high_freq)
-        elif self.wav_type == 'meyer':
-            # if Q != 1:
-            #    print("\nWarning: width of Meyer wavelets not adaptative with Q in the current implementation.\n")
-            xi, sigma = lfb.compute_meyer_parameters(self.J, self.Q, high_freq=high_freq)
-        elif self.wav_type == 'shannon':
-            xi, sigma = lfb.compute_shannon_parameters(self.J, self.Q, high_freq=high_freq)
-        else:
-            raise ValueError("Unkown wavelet type: {}".format(self.wav_type))
-        self.xi = np.array(xi)
-        self.sigma = np.array(sigma)
-
-        # initialize wavelets
-        if self.wav_type == "morlet":
-            psi_hat = [lfb.morlet_1d(self.T, xi, sigma, self.wav_norm) for xi, sigma in zip(self.xi, self.sigma)]
-        elif self.wav_type == "battle_lemarie":
-            psi_hat = [lfb.battle_lemarie_psi(self.T, self.Q, xi, self.wav_norm) for xi in self.xi]
-            # psi_hat[]
-        elif self.wav_type == "bump_steerable":
-            psi_hat = [lfb.bump_steerable_psi(self.T, xi) / np.sqrt(self.Q) for xi in self.xi]
-        elif self.wav_type == 'meyer':
-            psi_hat = [lfb.meyer_psi(self.T, 1, xi) for xi in self.xi]
-        elif self.wav_type == 'shannon':
-            psi_hat = [lfb.shannon_psi(self.T, xi, sigma) for xi, sigma in zip(self.xi, self.sigma)]
-        else:
-            raise ValueError("Unrecognized wavelet type.")
-        psi_hat = np.stack(psi_hat, axis=0)
-
-        # some high frequency wavelets have strange behavior at negative low frequencies
-        psi_hat[:, -self.T // 8:] = 0.0
-
-        # pytorch parameter
-        psi_hat = nn.Parameter(cplx.from_np(psi_hat), requires_grad=False)
-        return psi_hat
-
-    def init_low_pass(self):
-        """Compute the low-pass Fourier transforms assuming it has the same variance
-        as the lowest-frequency wavelet.
-        """
-        self.xi = np.append(self.xi, 0.0)
-        if self.wav_type == "morlet":
-            sigma_low = self.sigma[-1]
-            np.append(self.sigma, lfb.compute_morlet_low_pass_parameters(self.J, self.Q, self.high_freq))
-            phi_hat = lfb.gauss_1d(self.T, sigma_low)
-        elif self.wav_type == "battle_lemarie":
-            xi_low = self.xi[-2]  # Because 0 was appended for Morlet
-            # phi_hat = lfb.battle_lemarie_phi(2*self.T, self.Q, xi_low)
-            phi_hat = lfb.battle_lemarie_phi(self.T, 1, xi_low)
-        elif self.wav_type == "bump_steerable":
-            xi_low = self.xi[-2]  # Because 0 was appended for Morlet
-            phi_hat = lfb.bump_steerable_phi(self.T, 1, xi_low)
-        elif self.wav_type == 'meyer':
-            xi_low = self.xi[-2]
-            phi_hat = lfb.meyer_phi(self.T, xi_low)
-        elif self.wav_type == 'shannon':
-            sigma_low = self.xi[-2] - self.sigma[-1]
-            phi_hat = lfb.shannon_phi(self.T, sigma_low)
-        else:
-            raise ValueError("Unrecognized wavelet type.")
-
-        # pytorch parameter
-        phi_hat = cplx.from_np(phi_hat).unsqueeze(0)
-        return phi_hat
+        return DescribedTensor(x=None, idx_info=idx_info, y=x_filt.reshape((-1,) + x_filt.shape[-2:]))

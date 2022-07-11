@@ -4,15 +4,16 @@ import torch.nn as nn
 import torch
 
 import utils.complex_utils as cplx
-from scattering_network.model_output import ModelOutput
+from scattering_network.described_tensor import DescribedTensor
 
 
 class MSELossScat(nn.Module):
     def __init__(self):
         super(MSELossScat, self).__init__()
         self.max_gap = {}
+        self.lam_cutoff = 1e-5
 
-    def compute_gap(self, input: Optional[ModelOutput], target: ModelOutput, weights):
+    def compute_gap(self, input: Optional[DescribedTensor], target: DescribedTensor, weights):
         if input is None:
             gap = torch.zeros_like(target.y) - target.y
         else:

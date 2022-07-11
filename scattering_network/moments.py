@@ -4,8 +4,8 @@ from collections import namedtuple
 import torch
 
 from scattering_network.module_chunk import SubModuleChunk
-from scattering_network.scattering import ScaleIndexer
-from scattering_network.model_output import IdxInfo, ModelOutput
+from scattering_network.scale_indexer import ScaleIndexer
+from scattering_network.described_tensor import Description, DescribedTensor
 from utils import multid_where_np, multid_where
 import utils.complex_utils as cplx
 
@@ -34,7 +34,7 @@ class Marginal(SubModuleChunk):
         """From output_idx_info return the idxinfos that depend on output_idx_info to be computed."""
         return []
 
-    def init_one_chunk(self, input: ModelOutput, output_idx_info: IdxInfo, i_chunk: int) -> None:
+    def init_one_chunk(self, input: DescribedTensor, output_idx_info: Description, i_chunk: int) -> None:
         masks = []
 
         for q in self.qs:
@@ -50,7 +50,7 @@ class Marginal(SubModuleChunk):
     def get_output_space_dim(self):
         return 2
 
-    def forward_chunk(self, x: torch.Tensor, i_chunk: int) -> ModelOutput:
+    def forward_chunk(self, x: torch.Tensor, i_chunk: int) -> DescribedTensor:
         """Computes E[SX] and E[SX SX^*]."""
         idx_info = self.idx_info[i_chunk]
         mask_qs = self.masks[i_chunk]
@@ -59,18 +59,18 @@ class Marginal(SubModuleChunk):
         for q, mask_q in zip(self.qs, mask_qs):
             y[idx_info.where(q=q), 0] = cplx.modulus(x[mask_q, ...]).pow(q).mean(-1)
 
-        return ModelOutput(x=None, y=y, idx_info=idx_info)
+        return DescribedTensor(x=None, y=y, idx_info=idx_info)
 
 
 class Cov(SubModuleChunk):
     """Compute order 1 and order 2 moments on input Sx: E[SX], E[SX SX^*]."""
-    def __init__(self, J: int, Q: int, r_max: int, N: int, m_types: Optional[List[str]] = None):
+    def __init__(self, N: int, sc_idxer: ScaleIndexer, m_types: Optional[List[str]] = None):
         super(Cov, self).__init__(require_normalization=False)
-        self.sc_idxer = ScaleIndexer(J, Q, r_max)
-        self.r_max = r_max
         self.N = N
+        self.sc_idxer = sc_idxer
 
-        possible_m_types = [f'm{r1}{r2}' for (r1, r2) in product(range(self.r_max), range(self.r_max)) if r1 >= r2]
+        possible_m_types = [f'm{r1}{r2}' for (r1, r2) in
+                            product(range(self.sc_idxer.r_max), range(self.sc_idxer.r_max)) if r1 >= r2]
         desired_m_types = m_types or possible_m_types
         self.m_types = [m for m in desired_m_types if m in possible_m_types]
 
@@ -78,15 +78,17 @@ class Cov(SubModuleChunk):
         self.masks = []
 
     def external_surjection_aux(self, row: NamedTuple) -> List[NamedTuple]:
-        n, r, sc, *js, a, lp = row
-        out_columns = ['n1', 'n2', 'q', 'r1', 'r2', 'sc1', 'sc2'] + [f'j{r}' for r in range(1, self.r_max + 1)] + \
-                      [f'jp{r}' for r in range(1, self.r_max + 1)] + ['a1', 'a2', 're', 'lp', 'm_type']
+        n1, r, sc, *js, a, low = row
+        out_columns = ['n1', 'n1p', 'q', 'r', 'rp', 'sc', 'scp'] + \
+                      [f'j{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
+                      [f'jp{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
+                      ['a', 'ap', 're', 'low', 'm_type']
 
         output_idxinfo_l = []
 
         # E[SX]
-        if 'm00' in self.m_types and lp:
-            output_idxinfo_l.append((n, -1, 1, max(1, r-1), -1, sc, -1, *js, *(-1,)*len(js), a, -1, lp, r == 1, 'm00'))
+        if 'm00' in self.m_types and low:
+            output_idxinfo_l.append((n1, -1, 1, max(1, r-1), -1, sc, -1, *js, *(-1,)*len(js), a, -1, low, r==1, 'm00'))
 
         # E[SX SX^*]
         for scp in self.sc_idxer.get_all_idx():
@@ -101,7 +103,7 @@ class Cov(SubModuleChunk):
             if path[-1] != path_p[-1] or f'm{rl-1}{rr-1}' not in self.m_types:
                 continue
 
-            output_idxinfo_l.append((n, n, 2, rl, rr, scl, scr, *jl, *jr, a, a, lp or scl == scr, lp, f'm{rl-1}{rr-1}'))
+            output_idxinfo_l.append((n1, n1, 2, rl, rr, scl, scr, *jl, *jr, a, a, low or scl == scr, low, f'm{rl-1}{rr-1}'))
 
         return [namedtuple('IdxInfo', out_columns)(*row) for row in output_idxinfo_l]
 
@@ -109,16 +111,16 @@ class Cov(SubModuleChunk):
         """From output_idx_info return the idxinfos that depend on output_idx_info to be computed."""
         return []
 
-    def init_one_chunk(self, input: ModelOutput, output_idx_info: IdxInfo, i_chunk: int) -> None:
+    def init_one_chunk(self, input: DescribedTensor, output_idx_info: Description, i_chunk: int) -> None:
         """Init the parameters of the model required to compute output_idx_info from input_idx_info."""
-        channel_scale = input.idx_info.to_array(['n', 'sc'])
+        channel_scale = input.idx_info.to_array(['n1', 'sc'])
 
         # mask q = 1: E[SX]
-        mask_q1 = multid_where_np(output_idx_info.reduce(q=1).to_array(['n1', 'sc1']), channel_scale)
+        mask_q1 = multid_where_np(output_idx_info.reduce(q=1).to_array(['n1', 'sc']), channel_scale)
 
         # mask q = 2: E[SX SX^*]
-        mask_q2_l = multid_where_np(output_idx_info.reduce(q=2).to_array(['n1', 'sc1']), channel_scale)
-        mask_q2_r = multid_where_np(output_idx_info.reduce(q=2).to_array(['n2', 'sc2']), channel_scale)
+        mask_q2_l = multid_where_np(output_idx_info.reduce(q=2).to_array(['n1', 'sc']), channel_scale)
+        mask_q2_r = multid_where_np(output_idx_info.reduce(q=2).to_array(['n1p', 'scp']), channel_scale)
 
         self.masks.append((mask_q1, (mask_q2_l, mask_q2_r)))
 
@@ -128,7 +130,7 @@ class Cov(SubModuleChunk):
     def clear_params(self) -> None:
         self.masks = []
 
-    def forward_chunk(self, x: torch.Tensor, i_chunk: int) -> ModelOutput:
+    def forward_chunk(self, x: torch.Tensor, i_chunk: int) -> DescribedTensor:
         """Computes E[SX] and E[SX SX^*]."""
         idx_info = self.idx_info[i_chunk]
         mask_q1, masks_q2 = self.masks[i_chunk]
@@ -137,12 +139,12 @@ class Cov(SubModuleChunk):
         # q = 1: E[SX]
         y[idx_info.where(q=1), ...] = x[mask_q1, :, :].mean(-2)
 
-        # q = 2: E[z z^*]
+        # q = 2: E[SX SX^*]
         zl = x[masks_q2[0], :, :]
         zr = cplx.conjugate(x[masks_q2[1], :, :])
         y[idx_info.where(q=2), ...] = cplx.mul(zl, zr).mean(-2)
 
-        return ModelOutput(x=None, y=y, idx_info=idx_info)
+        return DescribedTensor(x=None, y=y, idx_info=idx_info)
 
 
 class CovStat(SubModuleChunk):
@@ -164,25 +166,25 @@ class CovStat(SubModuleChunk):
 
     def external_surjection_aux(self, row: NamedTuple) -> List[NamedTuple]:
         """Return IdxInfo which depends on row to be computed."""
-        n1, n2, q, r1, r2, sc1, sc2, j1, j2, jp1, jp2, a1, a2, re, lp, m_type = row
-        out_columns = ['n1', 'n2', 'q', 'r1', 'r2', 'j', 'alpha', 'beta', 'a1', 'a2', 're', 'lp', 'm_type']
+        n1, n2, q, r1, r2, sc1, sc2, j1, j2, jp1, jp2, a1, a2, re, low, m_type = row
+        out_columns = ['n1', 'n2', 'q', 'r1', 'r2', 'j', 'alpha', 'beta', 'a1', 'a2', 're', 'low', 'm_type']
         row_l = []
         # todo: replace beta trivial from 0 to a nan value for example, in scat too
         if m_type == 'm00' and 'm00' in self.m_types:
-            row_l.append((n1, n2, q, r1, r2, j1, 0, 0, a1, a2, re, lp, m_type))
+            row_l.append((n1, n2, q, r1, r2, j1, 0, 0, a1, a2, re, low, m_type))
         if m_type == 'm10' and 'm10' in self.m_types:
-            j, alpha = (j1, 0) if lp else (-1, jp1 - j1)
-            row_l.append((n1, n2, q, r1, r2, j, alpha, 0, a1, a2, lp, lp, 'm10'))
+            j, alpha = (j1, 0) if low else (-1, jp1 - j1)
+            row_l.append((n1, n2, q, r1, r2, j, alpha, 0, a1, a2, low, low, 'm10'))
         if m_type == 'm11' and 'm11' in self.m_types:
-            alpha, beta = j1 - jp1, (0 if lp else j1 - j2)
-            row_l.append((n1, n2, q, r1, r2, j1 if lp else -1, alpha, beta, a1, a2, alpha == 0 or lp, lp, 'm11'))
+            alpha, beta = j1 - jp1, (0 if low else j1 - j2)
+            row_l.append((n1, n2, q, r1, r2, j1 if low else -1, alpha, beta, a1, a2, alpha == 0 or low, low, 'm11'))
 
         return [namedtuple('IdxInfo', out_columns)(*row) for row in row_l]
 
     def internal_surjection(self, row: NamedTuple) -> List[NamedTuple]:
         return []
 
-    def construct_proj(self, input: ModelOutput, output_idx_info: IdxInfo) -> torch.tensor:
+    def construct_proj(self, input: DescribedTensor, output_idx_info: Description) -> torch.tensor:
         input_idx_info = input.idx_info
         output_idx_info_iter = list(output_idx_info.iter_tuple())
 
@@ -200,14 +202,14 @@ class CovStat(SubModuleChunk):
 
         return proj
 
-    def init_one_chunk(self, input: ModelOutput, output_idx_info: IdxInfo, i_chunk: int) -> None:
+    def init_one_chunk(self, input: DescribedTensor, output_idx_info: Description, i_chunk: int) -> None:
         """Init the parameters of the model required to compute output_idx_info from input_idx_info."""
         self.register_buffer(f'proj_{i_chunk}', self.construct_proj(input, output_idx_info))
 
     def get_output_space_dim(self):
         return 2
 
-    def forward_chunk(self, x: torch.tensor, i_chunk: int) -> ModelOutput:
+    def forward_chunk(self, x: torch.tensor, i_chunk: int) -> DescribedTensor:
         """Computes moments."""
         idx_info = self.idx_info[i_chunk]
 
@@ -215,4 +217,4 @@ class CovStat(SubModuleChunk):
 
         moments = proj @ x
 
-        return ModelOutput(x=None, idx_info=idx_info, y=moments)
+        return DescribedTensor(x=None, idx_info=idx_info, y=moments)

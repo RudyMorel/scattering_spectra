@@ -64,8 +64,8 @@ def morlet_1d(N, xi, sigma, normalize='l1', P_max=5, eps=1e-7):
     gabor_f = np.exp(-(freqs - xi)**2 / (2 * sigma**2))
     low_pass_f = np.exp(-(freqs_low**2) / (2 * sigma**2))
     # discretize in signal <=> periodize in Fourier
-    gabor_f = periodize_filter_fourier(gabor_f, n_periods=2 * P - 1)
-    low_pass_f = periodize_filter_fourier(low_pass_f, n_periods=2 * P - 1)
+    gabor_f = periodize_filter_fourier(gabor_f, nperiods=2 * P - 1)
+    low_pass_f = periodize_filter_fourier(low_pass_f, nperiods=2 * P - 1)
     # find the summation factor to ensure that morlet_f[0] = 0.
     kappa = gabor_f[0] / low_pass_f[0]
     morlet_f = gabor_f - kappa * low_pass_f
@@ -119,7 +119,7 @@ def adaptive_choice_P(sigma, eps=1e-7):
     return P
 
 
-def periodize_filter_fourier(h_f, n_periods=1):
+def periodize_filter_fourier(h_f, nperiods=1):
     """
     Computes a periodization of a filter provided in the Fourier domain.
 
@@ -127,7 +127,7 @@ def periodize_filter_fourier(h_f, n_periods=1):
     ----------
     h_f : array_like
         complex numpy array of shape (N*n_periods,)
-    n_periods: int, optional
+    nperiods: int, optional
         Number of periods which should be used to periodize
 
     Returns
@@ -137,8 +137,8 @@ def periodize_filter_fourier(h_f, n_periods=1):
         h_f as described in the formula:
         v_f[k] = sum_{i=0}^{n_periods - 1} h_f[i * N + k]
     """
-    N = h_f.shape[0] // n_periods
-    v_f = h_f.reshape(n_periods, N).mean(axis=0)
+    N = h_f.shape[0] // nperiods
+    v_f = h_f.reshape(nperiods, N).mean(axis=0)
     return v_f
 
 
@@ -217,7 +217,7 @@ def gauss_1d(N, sigma, normalize='l1', P_max=5, eps=1e-7):
     # define the low pass
     g_f = np.exp(-freqs_low**2 / (2 * sigma**2))
     # periodize it
-    g_f = periodize_filter_fourier(g_f, n_periods=2 * P - 1)
+    g_f = periodize_filter_fourier(g_f, nperiods=2 * P - 1)
     # normalize the signal
     g_f *= get_normalizing_factor(g_f, normalize=normalize)
     # return the Fourier transform
@@ -233,7 +233,7 @@ def compute_sigma_psi(xi, Q, r=np.sqrt(0.5)):
     frequency responses of the next filter occurs at a r-bandwidth specified
     by r, to ensure a correct coverage of the whole frequency axis.
     """
-    factor = 1. / np.pow(2, 1. / Q)
+    factor = 1. / (2. ** (1. / Q))
     term1 = (1 - factor) / (1 + factor)
     term2 = 1. / np.sqrt(2 * np.log(1. / r))
     return xi * term1 * term2
@@ -261,24 +261,18 @@ def compute_morlet_low_pass_parameters(J, Q, max_frequency):
     return sigma_low
 
 
-def compute_battle_lemarie_parameters(N, Q, high_freq=0.5):
-    xi_curr = high_freq
-    xi, sigma = [], [0.1]
-    sigma.pop(0)  # (bad) Trick to enable numba to inference type of sigma
-    factor = 1. / 2. ** (1 / Q)
-    for nq in range(N * Q):
-        xi.append(xi_curr)
-        xi_curr *= factor
-
-    return xi, sigma
-
-
 ###############################################
 # Battle-Lemarie Wavelets
 ###############################################
 
 # BL_XI0 = 0.7593990773014584
 BL_XI0 = 0.75 * 1.012470304985129
+
+
+def compute_battle_lemarie_parameters(J, Q, high_freq=0.5):
+    factor = 1. / 2. ** (1 / Q)
+    xi, sigma = [high_freq * factor ** j for j in range(J * Q)], []
+    return xi, sigma
 
 
 def b_function(freqs):
@@ -292,14 +286,11 @@ def b_function(freqs):
     return num, sin8
 
 
-def battle_lemarie_psi(N, Q, xi, normalize):
-    if Q != 1:
-        raise NotImplementedError("Scaling BL wavelets to multiple wavelets per octave not implemented yet.")
-
+def battle_lemarie_psi(T, Q, xi, normalize):
     xi0 = BL_XI0  # mother wavelet center
 
     # frequencies for mother wavelet with 1 wavelet per octave
-    abs_freqs = np.linspace(0, 1, N + 1)[:-1]
+    abs_freqs = np.linspace(0, 1, T + 1)[:-1]
     # frequencies for wavelet centered in xi with 1 wavelet1 per octave
     freqs = abs_freqs * xi0 / xi
     # frequencies for wavelet centered in xi with Q wavelets per octave
@@ -365,8 +356,8 @@ def battle_lemarie_phi(N, Q, xi_min):
 ###############################################
 
 
-def compute_bump_steerable_parameters(N, Q, high_freq=0.5):
-    return compute_battle_lemarie_parameters(N, Q, high_freq=high_freq)
+def compute_bump_steerable_parameters(J, Q, high_freq=0.5):
+    return compute_battle_lemarie_parameters(J, Q, high_freq=high_freq)
 
 
 def low_pass_constants(Q):
@@ -414,8 +405,8 @@ def bump_steerable_phi(N, Q, xi_min):
 ###############################################
 
 
-def compute_meyer_parameters(N, Q, high_freq):
-    return compute_battle_lemarie_parameters(N, Q, high_freq=high_freq)
+def compute_meyer_parameters(J, Q, high_freq):
+    return compute_battle_lemarie_parameters(J, Q, high_freq=high_freq)
 
 
 def compute_shannon_parameters(J, Q, high_freq):  # bad code
@@ -477,3 +468,82 @@ def meyer_mother_phi(w):
     idx = np.logical_and(2 * np.pi / 3 < np.abs(w), np.abs(w) < 4 * np.pi / 3)
     phi[idx] = np.cos(np.pi / 2 * nu(3 * np.abs(w[idx]) / 2 / np.pi - 1)) / np.sqrt(2 * np.pi)
     return phi * 2
+
+
+###############################################
+# initialize wavelets
+###############################################
+
+
+def init_wavelet_param(wav_type, J, Q, high_freq):
+    if wav_type == 'morlet':
+        xi, sigma = compute_morlet_parameters(J, Q, high_freq)
+    elif wav_type == 'battle_lemarie':
+        xi, sigma = compute_battle_lemarie_parameters(J, Q, high_freq)
+    elif wav_type == 'bump_steerable':
+        if Q != 1:
+            print("\nWarning: width of Bump-Steerable wavelets not adaptative with Q.\n")
+        xi, sigma = compute_bump_steerable_parameters(J, Q, high_freq)
+    elif wav_type == 'meyer':
+        # if Q != 1:
+        #    print("\nWarning: width of Meyer wavelets not adaptative with Q in the current implementation.\n")
+        xi, sigma = compute_meyer_parameters(J, Q, high_freq)
+    elif wav_type == 'shannon':
+        xi, sigma = compute_shannon_parameters(J, Q, high_freq)
+    else:
+        raise ValueError("Unkown wavelet type: {}".format(wav_type))
+
+    return np.array(xi), np.array(sigma)
+
+
+def init_band_pass(wav_type, T, J, Q, high_freq, wav_norm):
+    xis, sigmas = init_wavelet_param(wav_type, J, Q, high_freq)
+
+    if wav_type == "morlet":
+        psi_hat = [morlet_1d(T, xi, sigma, wav_norm) for xi, sigma in zip(xis, sigmas)]
+    elif wav_type == "battle_lemarie":
+        psi_hat = [battle_lemarie_psi(T, Q, xi, wav_norm) for xi in xis]
+    elif wav_type == "bump_steerable":
+        psi_hat = [bump_steerable_psi(T, xi) / np.sqrt(Q) for xi in xis]
+    elif wav_type == 'meyer':
+        psi_hat = [meyer_psi(T, 1, xi) for xi in xis]
+    elif wav_type == 'shannon':
+        psi_hat = [shannon_psi(T, xi, sigma) for xi, sigma in zip(xis, sigmas)]
+    else:
+        raise ValueError("Unkown wavelet type: {}".format(wav_type))
+    psi_hat = np.stack(psi_hat, axis=0)
+
+    # some high frequency wavelets have strange behavior at negative low frequencies
+    psi_hat[:, -T // 8:] = 0.0
+
+    return psi_hat
+
+
+def init_low_pass(wav_type, T, J, Q, high_freq):
+    """
+    Compute the low-pass Fourier transforms assuming it has the same variance
+    as the lowest-frequency wavelet.
+    """
+    xis, sigmas = init_wavelet_param(wav_type, J, Q, high_freq)
+    xis = np.append(xis, 0.0)
+
+    if wav_type == "morlet":
+        sigma_low = sigmas[-1]
+        np.append(sigmas, compute_morlet_low_pass_parameters(J, Q, high_freq))
+        phi_hat = gauss_1d(T, sigma_low)
+    elif wav_type == "battle_lemarie":
+        xi_low = xis[-2]  # Because 0 was appended for Morlet
+        phi_hat = battle_lemarie_phi(T, 1, xi_low)
+    elif wav_type == "bump_steerable":
+        xi_low = xis[-2]  # Because 0 was appended for Morlet
+        phi_hat = bump_steerable_phi(T, 1, xi_low)
+    elif wav_type == 'meyer':
+        xi_low = xis[-2]
+        phi_hat = meyer_phi(T, xi_low)
+    elif wav_type == 'shannon':
+        sigma_low = xis[-2] - sigmas[-1]
+        phi_hat = shannon_phi(T, sigma_low)
+    else:
+        raise ValueError("Unkown wavelet type: {}".format(wav_type))
+
+    return phi_hat

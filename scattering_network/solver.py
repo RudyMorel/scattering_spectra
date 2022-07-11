@@ -11,7 +11,7 @@ from torch.autograd import Variable, grad
 from global_const import Tensor
 import utils.complex_utils as cplx
 from scattering_network.module_chunk import ModuleChunk
-from scattering_network.model_output import ModelOutput
+from scattering_network.described_tensor import DescribedTensor
 
 
 def compute_w_l2(weights, model, w_gap, nchunks):
@@ -32,8 +32,6 @@ def compute_w_l2(weights, model, w_gap, nchunks):
             coeff_type_mask = model.idx_info_chunked[-1][i_chunk].where(m_type=m_type)
             w_l2[i_chunk][coeff_type_mask] *= weights[m_type]
 
-    # test = sum([w.sum() for w in self.w_l2])
-
     assert abs(sum([w.sum() for w in w_l2]) - 1.0) < 1e-6
 
     return w_l2
@@ -41,38 +39,28 @@ def compute_w_l2(weights, model, w_gap, nchunks):
 
 class Solver(nn.Module):
     def __init__(self, model: ModuleChunk, loss: nn.Module,
-                 xf: Optional[torch.Tensor] = None, Rxf: Optional[ModelOutput] = None,
+                 xf: Optional[torch.Tensor] = None, Rxf: Optional[DescribedTensor] = None,
                  x0: Optional[torch.Tensor] = None,
-                 weights: Optional[Dict[str, float]] = None, cuda: bool = False, relative_optim: bool = False):
+                 weights: Optional[Dict[str, float]] = None, cuda: bool = False, relative_optim: bool = False,):
         super(Solver, self).__init__()
 
-        # self.time_tracker = TimeTracker()
-
-        # self.time_tracker.start('model_init')
         self.model = model
         self.loss = loss
 
-        self.N = model.module_list[0].N
+        self.N = xf.shape[2]
         self.nchunks = self.model.nchunks
         self.is_cuda = cuda
-        self.xf = xf
-        # xf_torch = self.format(xf, requires_grad=False)
+        self.xf = cplx.from_np(xf)
 
         self.res = None, None
 
-        # init chunks on model: model parameters, normalization ...
-        self.model.clear_params()
-        self.model.init_chunks()
-
         if cuda:
             self.cuda()
+            self.xf = self.xf.cuda()
             if Rxf is not None:
                 Rxf = Rxf.cuda()
 
         # compute target representation RXf
-        # if Rxf is None:
-        #     self.Rxf = [self.model(xf_torch, i_chunk) for i_chunk in range(self.nchunks)]
-        # else:
         self.Rxf = [Rxf]
 
         # compute weights from target representation
@@ -87,21 +75,6 @@ class Solver(nn.Module):
             if weights is None:
                 weights = {m_type: 1 / (scat * nbs[m_type]) for m_type in model.m_types}
             self.w_l2 = compute_w_l2(weights, model, self.w_gap, self.nchunks)
-
-            # from utils.torch_utils import to_numpy
-            # import matplotlib.pyplot as plt
-            # eps_test = 1e-6
-            # moments_test = cplx.to_np(self.Rxf[0].y)
-            # nb_low_mom = (np.abs(moments_test) < eps_test).sum()
-            # # wh_low_mom = np.where(np.abs(moments_test) < eps_test)[0]
-            # vry_low_mom = self.Rxf[0].reduce(mask=np.abs(moments_test) < eps_test)
-            # idx_low = vry_low_mom.idx_info
-            # low_mom = vry_low_mom.y
-            # min, max, mean = np.abs(moments_test).min(), np.abs(moments_test).max(), np.abs(moments_test).mean()
-            # q1, q2, q3 = np.quantile(np.abs(moments_test), [0.1, 0.5, 0.9])
-            # # plt.hist(np.log10(np.abs(moments_test)[np.abs(moments_test) < q3]), bins=30)
-            # plt.hist(np.log10(np.abs(moments_test)), bins=30)
-            # plt.show()
 
         # compute initial loss
         self.loss0 = 0.0
@@ -131,38 +104,27 @@ class Solver(nn.Module):
                 x_torch.grad.X.zero_()
 
             # compute moments
-            # self.time_tracker.start('forward')
             Rxt_chunk = self.model(x_torch, i_chunk)
 
             # compute loss function
-            # self.time_tracker.start('loss')
             loss = self.loss(Rxt_chunk, self.Rxf[i_chunk], self.w_gap[i_chunk], self.w_l2[i_chunk])
             res_max = {m_type: max(res_max[m_type], self.loss.max_gap[m_type] if m_type in self.loss.max_gap else 0.0)
                        for m_type in self.model.module_list[-1].m_types}
-            # if self.w_gap[0] is None:
-            #     loss /= self.loss0
 
             # compute gradient
-            # self.time_tracker.start('backward')
             grad_x, = grad([loss], [x_torch], retain_graph=True)
 
             # only get the real part
             grad_x = grad_x[0, ..., 0]
 
             # move to numpy
-            # self.time_tracker.start('move_np')
             grad_x = grad_x.contiguous().detach().cpu().numpy()
             loss = loss.detach().cpu().numpy()
-            # self.time_tracker.start('none')
 
             total_loss += loss
             total_grad_x += grad_x
 
         self.res = total_loss, total_grad_x.ravel(), res_max  # todo: divide loss by the number of chunks ?
-
-        # import matplotlib.pyplot as plt
-        # plt.plot(self.res[1])
-        # plt.show()
 
         return total_loss, total_grad_x.ravel()
 
@@ -182,7 +144,6 @@ class CheckConvCriterion:
         self.max_gap = None
         self.gerr = None
         self.tic = time()
-        # self.weight_done = False
 
         self.max_wait, self.wait = max_wait, 0
         self.save_data_evolution_p = save_data_evolution_p
@@ -191,8 +152,9 @@ class CheckConvCriterion:
         self.logs_grad = []
         self.logs_x = []
 
+        self.curr_xk = cplx.to_np(solver.xf).real[0, 0, 0, :]
+
     def __call__(self, xk):
-        # err, grad_xk = self.model.joint(xk)
         err, grad_xk, max_gap = self.solver.res
         gerr = np.max(np.abs(grad_xk))
         err, gerr = float(err), float(gerr)

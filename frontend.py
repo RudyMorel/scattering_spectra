@@ -8,10 +8,11 @@ import matplotlib.pyplot as plt
 import utils.complex_utils as cplx
 from utils import to_numpy
 from data_source import FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
-from scattering_network.scattering import Scattering
+from scattering_network.scale_indexer import ScaleIndexer
+from scattering_network.time_layers import Wavelet
 from scattering_network.moments import Marginal, Cov, CovStat
-from scattering_network.module_chunk import ModuleChunk
-from scattering_network.model_output import ModelOutput
+from scattering_network.module_chunk import ModuleChunk, SkipConnection
+from scattering_network.described_tensor import DescribedTensor
 
 
 ##################
@@ -53,15 +54,15 @@ def load_data(name, R, T, cache_dir=None, **data_param):
 # ANALYSIS
 ##################
 
-def init_model(N, T, J, Q, r_max, A, wav_type, high_freq, rm_high, wav_norm, normalize,
+def init_model(N, T, J, Q1, Q2, r_max, wav_type, high_freq, rm_high, wav_norm, normalize,
                moments, m_types, chunk_method, nchunks):
     """Initialize a scattering covariance model.
 
     :param N: number of in_data channel
     :param T: number of time samples
-    :param Q: wavelets per octave
+    :param Q1: wavelets per octave first layer
+    :param Q2: wavelets per octave second layer
     :param r_max: number convolution layers
-    :param A: number of angles
     :param wav_type: wavelet type
     :param high_freq: central frequency of mother wavelet
     :param rm_high: wether to remove high frequencies from data before scattering
@@ -74,23 +75,39 @@ def init_model(N, T, J, Q, r_max, A, wav_type, high_freq, rm_high, wav_norm, nor
 
     :return: a torch module
     """
-    module_list = [Scattering(J, Q, r_max, T, A, N, wav_type, high_freq, rm_high, wav_norm, normalize)]
+    module_list = []
 
+    # scattering network
+    sc_idxer = ScaleIndexer(J, Q1, Q2, r_max)
+    W1 = Wavelet(T, J, Q1, wav_type, high_freq, wav_norm, 1, sc_idxer)
+    module_list.append(W1)
+
+    if r_max > 1:
+        W2 = Wavelet(T, J, Q2, wav_type, high_freq, wav_norm, 2, sc_idxer)
+        module_list.append(SkipConnection(W2))
+
+    # moments
     if moments == 'marginal':
-        module_list.append(Marginal(qs=[2.0]))
+        module_list.append(Marginal(qs=[1.0, 2.0]))
     if moments in ['cov', 'covstat']:
-        module_list.append(Cov(J, Q, r_max, N, m_types))
+        module_list.append(Cov(N, sc_idxer, m_types))
     if moments == 'covstat':
-        module_list.append(CovStat(J * Q, m_types))
+        module_list.append(CovStat(J * Q1, m_types))
 
-    return ModuleChunk(module_list, chunk_method, nchunks)
+    model = ModuleChunk(module_list, chunk_method, N, nchunks)
+
+    model.clear_params()
+    model.init_chunks()
+
+    return model
 
 
-def compute_scattering_normalization(xf_torch, J, Q, wav_type, high_freq, wav_norm):
+def compute_scattering_normalization(xf_torch, J, Q1, Q2, wav_type, high_freq, wav_norm):
     """Compute sigma^2(j).
     :param xf_torch: a 1 x N x T x 2 tensor
     :param J: number of octaves
-    :param Q: number of scales per octave
+    :param Q1: number of scales per octave first layer
+    :param Q2: number of scales per octave second layer
     :param wav_type: wavelet type
     :param high_freq: central frequency of mother wavelet
     :param wav_norm: wavelet normalization i.e. l1, l2
@@ -99,27 +116,28 @@ def compute_scattering_normalization(xf_torch, J, Q, wav_type, high_freq, wav_no
     """
     # TODO. Should be implemented as a proper normalization layer
     model_avg = init_model(
-        N=xf_torch.shape[1], T=xf_torch.shape[2], J=J, Q=Q, r_max=1, A=None,
-        wav_type=wav_type, high_freq=high_freq, rm_high=True, wav_norm=wav_norm, normalize=False,
+        N=xf_torch.shape[1], T=xf_torch.shape[2], J=J, Q1=Q1, Q2=Q2, r_max=1,
+        wav_type=wav_type, high_freq=high_freq, rm_high=False, wav_norm=wav_norm, normalize=False,
         moments='marginal', m_types=['m00'], chunk_method='quotient_n', nchunks=xf_torch.shape[1]
     )
     model_avg.clear_params()
     model_avg.init_chunks()
     model_avg.cuda()  # TODO. Implement cpu possibility
-    return cplx.real(model_avg(xf_torch).mean('n').select(q=2.0)).pow(0.5)
+    return cplx.real(model_avg(xf_torch).mean('n1').select(q=2.0)).pow(0.5)
 
 
-def analyze(X, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-            rm_high=False, moments='covstat', m_types=None, nchunks=None,
-            cuda=False):
+def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
+            rm_high=False, moments='covstat', m_types=None, keep_past=False,
+            nchunks=None, cuda=False):
     """Compute sigma^2(j).
     :param X: a R x T array
     :param J: number of octaves
-    :param Q: number of scales per octave
+    :param Q1: number of scales per octave on first wavelet layer
+    :param Q2: number of scales per octave on second wavelet layer
     :param wav_type: wavelet type
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param high_freq: central frequency of mother wavelet
-    :param rm_high: preprocess data by doing a high pass filter
+    :param rm_high: preprocess data by doing a low pass filter
     :param moments: the type of moments to compute
     :param m_types: m00: sigma^2 and s^2, m10: cp, m11: cm
     :param nchunks: nb of chunks, increase it to reduce memory usage
@@ -128,16 +146,15 @@ def analyze(X, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=
     """
     R, T = X.shape
 
-    if m_types is None:
-        m_types = ['m00', 'm10', 'm11']
     if J is None:
         J = int(np.log2(T)) - 3
 
     X = cplx.from_np(X).unsqueeze(0)
 
     # initialize model
-    model = init_model(N=R, T=T, J=J, Q=Q, r_max=2, A=None, wav_type=wav_type, high_freq=high_freq, rm_high=rm_high,
-                       wav_norm=wav_norm, normalize=moments=='covstat', moments=moments, m_types=m_types,
+    model = init_model(N=R, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type=wav_type, high_freq=high_freq, rm_high=rm_high,
+                       wav_norm=wav_norm, normalize=moments == 'covstat', moments=moments,
+                       m_types=m_types or ['m00', 'm10', 'm11'],
                        chunk_method='quotient_n', nchunks=nchunks or R)
     model.init_chunks()
 
@@ -164,33 +181,6 @@ COLORS = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 're
           'paleturquoise'] + ['orchid'] * 20
 
 
-def plot_spectrum_bis(RXs, labels=None, linewidth=3.0):
-    if len(RXs) != len(labels):
-        raise ValueError("Invalid number of labels")
-
-    n_outputs = len(RXs)
-    labels = labels or [''] * n_outputs
-
-    extract_moments = lambda RX, q: cplx.real(RX.select(pivot='n1', m_type='m00', q=2, lp=False)).log2().mean(0)
-
-    # coefficients sigma^2(j)
-    log_spectrums = [extract_moments(RX, 2) for RX in RXs]
-
-    # coefficients sparsity^2(j)
-    log_sparsity = [2 * extract_moments(RX, 1) - extract_moments(RX, 2) for RX in RXs]
-
-    # plot
-    js = np.arange(log_spectrums[0].size)
-    plt.figure(figsize=(10, 10))
-    for i_lb, (lb, RX) in enumerate(zip(labels, RXs)):
-        plt.subplot2grid((1, 2), (0, 0))
-        plt.plot(-js, log_spectrums, label=lb, linewidth=linewidth)
-        plt.scatter(-js, log_spectrums, marker='+', s=200, linewidth=linewidth)
-        plt.subplot2grid((1, 2), (0, 1))
-        plt.plot(-js, log_sparsity, label=lb, linewidth=linewidth)
-        plt.scatter(-js, log_sparsity, marker='+', s=200, linewidth=linewidth)
-
-
 def bootstrap_variance_complex(X, n_points, n_samples):
     """Estimate variance of tensor X along last axis using bootstrap method."""
     # sample data uniformly
@@ -207,132 +197,120 @@ def bootstrap_variance_complex(X, n_points, n_samples):
 
 
 def error_arg(mod, err_mod):
-    """Obtain error on complex phase from error on modulus."""
     return np.arctan(err_mod / mod / np.sqrt(np.clip(1 - err_mod ** 2 / mod ** 2, 1e-6, 1)))
 
 
-def plot_marginal_moments(RXs, estim_bar=False, self_simi_bar=False,
-                          labels=None, linewidth=3.0, fontsize=30, offset=0, axes=None):
+def plot_marginal_moments(RXs, estim_err=False,
+                          axes=None, labels=None, linewidth=3.0, fontsize=30):
     """
     Plot the marginal moments
         - (wavelet power spectrum) sigma^2(j)
         - (sparsity factors) s^2(j)
 
     :param RXs: ModelOutput or list of ModelOutput
-    :param estim_bar: display estimation error due to estimation on several realizations
-    :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
+    :param estim_err: display estimation error due to estimation on several realizations
+    :param axes: custom axes: array of size 2
     :param labels: list of labels for each model output
     :param linewidth: curve linewidth
     :param fontsize: labels fontsize
-    :param offset: wether to start at j=0 (mother wavelet) or j=offset
-    :param axes: custom axes: array of size 2
     :return:
     """
-    if isinstance(RXs, ModelOutput):
+    if isinstance(RXs, DescribedTensor):
         RXs = [RXs]
     if labels is not None and len(RXs) != len(labels):
         raise ValueError("Invalid number of labels")
-    if estim_bar:
+    if estim_err:
         raise ValueError("Estim error plot not yet supported.")
+    if axes is not None and axes.size != 2:
+        raise ValueError("The axes provied to plot_marginal_moments should be an array of size 2.")
 
     labels = labels or [''] * len(RXs)
-    labels_here = labels
-    columns = RXs[0].idx_info.columns
-    J = RXs[0].idx_info.j.max() if 'j' in columns else RXs[0].idx_info.j1.max()
+    axes = None if axes is None else axes.ravel()
 
-    Cmarginal = np.zeros((len(labels), 3, J))
-    estim_error = np.zeros((len(labels), 3, J))
-    for i_lb, (label, RX) in enumerate(zip(labels, RXs)):
-        WX1 = RX.select(pivot='n1', m_type='m00', q=1, lp=False)
-        WX2 = RX.select(pivot='n1', m_type='m00', q=2, lp=False)
+    def get_data(RX, q):
+        WX_nj = cplx.real(RX.select(pivot='n1', r=1, m_type='m00', q=q, low=False))
+        logWX_nj = torch.log2(WX_nj)
+        return logWX_nj
 
-        m1_nj = torch.log2(cplx.real(WX1))
-        m2_nj = torch.log2(cplx.real(WX2))
-        ms_nj = 2 * m1_nj - m2_nj
-        if self_simi_bar:
-            # marginal moments
-            Cmarginal[i_lb, 0, :] = m1_nj.mean(0)
-            Cmarginal[i_lb, 1, :] = m2_nj.mean(0)
-            Cmarginal[i_lb, 2, :] = ms_nj.mean(0)
+    def get_variance(WX_nj):
+        N = WX_nj.shape[0]
+        return (WX_nj - WX_nj.mean(0, keepdim=True)).pow(2.0).sum(0).div(N-1).div(N)
 
-            N = m1_nj.shape[0]
-            estim_error[i_lb, 0, :] = (m1_nj - m1_nj.mean(0, keepdim=True)).pow(2.0).sum(0).div(N - 1).div(N).pow(0.5)
-            estim_error[i_lb, 1, :] = (m2_nj - m1_nj.mean(0, keepdim=True)).pow(2.0).sum(0).div(N - 1).div(N).pow(0.5)
-            estim_error[i_lb, 2, :] = (ms_nj - m1_nj.mean(0, keepdim=True)).pow(2.0).sum(0).div(N - 1).div(N).pow(0.5)
+    def plot_exponent(js, i_ax, lb, y, y_err):
+        if axes is None:
+            plt.subplot2grid((1, 2), (0, i_ax))
         else:
-            Cmarginal[i_lb, 0, :] = 2 ** (m1_nj.mean(0))
-            Cmarginal[i_lb, 1, :] = 2 ** (m2_nj.mean(0))
-            Cmarginal[i_lb, 2, :] = 2 ** (ms_nj.mean(0))
-
-    if self_simi_bar:
-        Cmarginal += 2 * np.arange(len(labels))[:, None, None]
-    else:
-        Cmarginal[:, :2, :] /= Cmarginal[:, :2, -1:]
-
-    # PLOT 1 sigma^2
-    if axes is None:
-        plt.figure(figsize=(20, 10))
-        plt.subplot2grid((1, 2), (0, 0))
-    else:
-        plt.sca(axes[0])
-    js = np.arange(offset, Cmarginal.shape[-1])
-    for i_lb, lb in enumerate(labels_here):
-        if self_simi_bar:
-            plt.errorbar(-js, Cmarginal[i_lb, 1, offset:], yerr=estim_error[i_lb, 1, offset:], label=lb, capsize=4)
+            plt.sca(axes[i_ax])
+        if estim_err:
+            plt.errorbar(-js, y, yerr=y_err, label=lb, capsize=4)
         else:
-            plt.plot(-js, Cmarginal[i_lb, 1, offset:], label=lb, linewidth=linewidth)
-            plt.scatter(-js, Cmarginal[i_lb, 1, offset:], marker='+', s=200, linewidth=linewidth)
-    if not self_simi_bar:
-        plt.yscale('log', base=2)
-    plt.xlabel(r'$-j$', fontsize=fontsize + 30)
-    plt.yticks(fontsize=fontsize)
-    plt.xticks(-js, [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
-
-    # PLOT 2 sparsity^2
-    if axes is None:
-        plt.subplot2grid((1, 2), (0, 1))
-    else:
-        plt.sca(axes[1])
-    for i_lb, lb in enumerate(labels_here):
-        if self_simi_bar:
-            plt.errorbar(-js, Cmarginal[i_lb, 2, offset:], yerr=estim_error[i_lb, 2, offset:], label=lb, capsize=4)
+            plt.plot(-js, y, label=lb, linewidth=linewidth)
+            plt.scatter(-js, y, marker='+', s=200, linewidth=linewidth)
+        if not estim_err or True:
+            plt.yscale('log', base=2)
+        ax = plt.gca()
+        a, b = ax.get_ylim()
+        if i_ax == 0:
+            ax.set_ylim(min(a, 2**(-2)), max(b, 2**2))
         else:
-            plt.plot(-js, Cmarginal[i_lb, 2, offset:], label=lb, linewidth=linewidth)
-            plt.scatter(-js, Cmarginal[i_lb, 2, offset:], marker='+', s=200, linewidth=linewidth)
-    if not self_simi_bar:
-        plt.yscale('log', base=2)
-        plt.ylim(2 ** (-4), 1.0)
-    plt.xlabel(r'$-j$', fontsize=fontsize + 30)
-    plt.yticks(fontsize=fontsize)
-    plt.xticks(-js, [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
+            ax.set_ylim(min(2**(-3), a), 1.0)
+            # plt.ylim(2 ** (-4), 1.0)
+        plt.xlabel(r'$-j$', fontsize=fontsize)
+        plt.yticks(fontsize=fontsize)
+        plt.xticks(-js, [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
+        plt.legend(prop={'size': 15})
+
+    for i_lb, (lb, RX) in enumerate(zip(labels, RXs)):
+        if 'm_type' not in RX.idx_info.columns:
+            raise ValueError("The model output does not have the moments ")
+        js = np.unique(RX.idx_info.reduce(low=False).j1)
+
+        has_power_spectrum = 2.0 in RX.idx_info.q.values
+        has_sparsity = 1.0 in RX.idx_info.q.values
+
+        if has_power_spectrum:
+            logWX2_n = get_data(RX, 2.0)
+            logWX2_err = get_variance(logWX2_n) ** 0.5
+            logWX2 = logWX2_n.mean(0)
+            logWX2 -= logWX2[-1].item()
+            plot_exponent(js, 0, lb, 2.0 ** logWX2, 2.0 ** logWX2_err)
+            plt.title('Wavelet Spectrum', fontsize=fontsize)
+
+            if has_sparsity:
+                logWX1_n = get_data(RX, 1.0)
+                logWXs_n = 2 * logWX1_n - logWX2_n
+                logWXs_err = get_variance(logWXs_n) ** 0.5
+                logWXs = logWXs_n.mean(0)
+                plot_exponent(js, 1, lb, 2.0 ** logWXs, 2.0 ** logWXs_err)
+                plt.title('Sparsity factor', fontsize=fontsize)
 
 
-def plot_cross_phased(RXs, estim_bar=False, self_simi_bar=False,
-                      labels=None, phase_threshold=0.0075, fontsize=30, single_plot=False, ylim=0.09, axes=None):
+def plot_cross_phased(RXs, estim_err=False, self_simi_err=False, theta_threshold=0.0075,
+                      axes=None, labels=None, fontsize=30, single_plot=False, ylim=0.09):
     """
     Plot the phase-envelope cross-spectrum C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
 
     :param RXs: ModelOutput or list of ModelOutput
-    :param estim_bar: display estimation error due to estimation on several realizations
-    :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
+    :param estim_err: display estimation error due to estimation on several realizations
+    :param self_simi_err: display self-similarity error, it is a measure of scale regularity
+    :param theta_threshold: rules phase instability
+    :param axes: custom axes: array of size 2
     :param labels: list of labels for each model output
-    :param phase_threshold: rules phase instability
     :param fontsize: labels fontsize
     :param single_plot: output all ModelOutput on a single plot
     :param ylim: above y limit of modulus graph
-    :param axes: custom axes: array of size 2
     :return:
     """
-    if isinstance(RXs, ModelOutput):
+    if isinstance(RXs, DescribedTensor):
         RXs = [RXs]
     if labels is not None and len(RXs) != len(labels):
         raise ValueError("Invalid number of labels")
-    if estim_bar:
+    if estim_err:
         raise ValueError("Estim error plot not yet supported.")
 
     labels = labels or [''] * len(RXs)
     labels_here = labels
-    labels_curve = [''] * len(labels)
+    labels_curve = labels
     columns = RXs[0].idx_info.columns
     J = RXs[0].idx_info.j.max() if 'j' in columns else RXs[0].idx_info.j1.max()
 
@@ -345,12 +323,12 @@ def plot_cross_phased(RXs, estim_bar=False, self_simi_bar=False,
 
     for i_lb, (RX, lb, color) in enumerate(zip(RXs, labels_here, COLORS)):
         N = np.unique(RX.idx_info['n1'].values).size
-        norm2 = RX.select(pivot='n1', m_type='m00', q=2, lp=False)[:, :, 0].unsqueeze(-1)
+        norm2 = RX.select(pivot='n1', m_type='m00', q=2, low=False)[:, :, 0].unsqueeze(-1)
 
         for alpha in range(1, J):
             cp_nj = torch.zeros(N, J - alpha, 2)
             for j1 in range(alpha, J):
-                coeff = RX.select(pivot='n1', m_type='m10', j1=j1 - alpha, jp1=j1, lp=False)[:, 0, :]
+                coeff = RX.select(pivot='n1', m_type='m10', j1=j1 - alpha, jp1=j1, low=False)[:, 0, :]
                 coeff /= norm2[:, j1, ...].pow(0.5) * norm2[:, j1 - alpha, ...].pow(0.5)
                 cp_nj[:, j1 - alpha, :] = coeff
 
@@ -358,7 +336,7 @@ def plot_cross_phased(RXs, estim_bar=False, self_simi_bar=False,
             cp[i_lb, alpha - 1, :] = cp_nj.mean(0).mean(0)
             cp_err_j = (cplx.modulus(cp_nj).pow(2.0).mean(0) - cplx.modulus(cp_nj.mean(0)).pow(2.0)) / N
             err_mod[i_lb, alpha - 1] = cp_err_j.mean(0).pow(0.5)
-            if not self_simi_bar:
+            if not self_simi_err:
                 err_mod[i_lb, alpha - 1] = 0.0
                 err_estim[i_lb, alpha - 1] = 0.0
 
@@ -366,47 +344,46 @@ def plot_cross_phased(RXs, estim_bar=False, self_simi_bar=False,
     err_mod, err_estim, err_arg = to_numpy(err_mod), to_numpy(err_estim), error_arg(cp_mod, to_numpy(err_mod))
 
     # phase instability at z=0
-    cp_arg[cp_mod < phase_threshold] = 0.0
-    err_arg[cp_mod < phase_threshold] = 0.0
+    cp_arg[cp_mod < theta_threshold] = 0.0
+    err_arg[cp_mod < theta_threshold] = 0.0
 
     cp_arg = np.abs(cp_arg)
 
     def plot_modulus(i_lb, lb, lb_curve, color, y, y_err, y_err_estim):
         alphas = np.arange(1, J)
-        if self_simi_bar:
+        if self_simi_err:
             plt.errorbar(alphas, y, yerr=y_err, capsize=4, color=color,
                          linestyle=(0, (5, 5)) if 'standard' in lb_curve else '-', label=lb_curve)
-            if estim_bar:
+            if estim_err:
                 eb = plt.errorbar(alphas + 0.05, y, yerr=y_err_estim, capsize=4, color=color, fmt=' ')
                 eb[-1][0].set_linestyle('--')
         else:
             plt.plot(alphas, y, color=color or 'green', label=lb_curve)
             plt.scatter(alphas, y, color=color or 'green', marker='+')
+        plt.title("Phase-Env spectrum \n (Modulus)", fontsize=fontsize)
+        plt.axhline(0.0, linewidth=0.7, color='black')
+        plt.xticks(np.arange(1, J),
+                   [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
+        plt.xlabel(r'$a$', fontsize=fontsize)
+        plt.ylim(-0.02, ylim)
         if i_lb == 0:
-            plt.axhline(0.0, linewidth=0.7, color='black')
-            plt.ylim(-0.02, ylim)
-            plt.title(lb, fontsize=fontsize)
             plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
-            plt.ylabel(r'$\mathrm{Modulus}$', fontsize=fontsize)
             plt.yticks(fontsize=fontsize)
-        else:
-            plt.tick_params(labelleft=False)
-        plt.tick_params(labelbottom=False)
         plt.locator_params(axis='y', nbins=5)
+        plt.legend(prop={'size': 15})
 
-    def plot_phase(i_lb, lb_curve, color, y):
+    def plot_phase(lb_curve, color, y):
         alphas = np.arange(1, J)
-        plt.plot(alphas, y, color=color, linestyle=(0, (5, 5)) if 'standard' in lb_curve else '-', label=lb_curve)
+        plt.plot(alphas, y, color=color, linestyle=(0, (5, 5)) if 'standard' in lb_curve else '-',
+                 label=lb_curve)
         plt.scatter(alphas, y, color=color, marker='+')
         plt.xticks(np.arange(1, J), [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
         plt.yticks([-np.pi, -0.5 * np.pi, 0.0, 0.5 * np.pi, np.pi],
                    [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$'], fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
-        plt.xlabel(r'$a$', fontsize=fontsize + 10)
-        if i_lb == 0:
-            plt.ylabel(r'$\mathrm{Phase}$', fontsize=fontsize)
-        else:
-            plt.tick_params(labelleft=False)
+        plt.xlabel(r'$a$', fontsize=fontsize)
+        plt.title("Phase-Env spectrum \n (Phase)", fontsize=fontsize)
+        plt.legend(prop={'size': 15})
 
     if axes is None:
         plt.figure(figsize=(5, 10) if single_plot else (len(labels) * 5, 10))
@@ -415,41 +392,43 @@ def plot_cross_phased(RXs, estim_bar=False, self_simi_bar=False,
     else:
         plt.sca(axes[0])
     for i_lb, (lb, lb_curve) in enumerate(zip(labels_here, labels_curve)):
-        plot_modulus(i_lb, lb, lb_curve, COLORS[i_lb], cp_mod[i_lb], err_mod[i_lb],
-                     err_estim[i_lb])
+        plot_modulus(i_lb, lb, lb_curve, COLORS[i_lb], cp_mod[i_lb], err_mod[i_lb], err_estim[i_lb])
 
     if axes is None:
         plt.subplot2grid((2, 1), (1, 0))
     else:
         plt.sca(axes[1])
     for i_lb, (lb, lb_curve) in enumerate(zip(labels_here, labels_curve)):
-        plot_phase(i_lb, lb_curve, COLORS[i_lb], cp_arg[i_lb])
+        plot_phase(lb_curve, COLORS[i_lb], cp_arg[i_lb])
     if axes is None:
         plt.tight_layout()
 
 
-def plot_modulus(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True,
-                 labels=None, phase_threshold=0.0075, fontsize=40, ylim=3.5, axes=None):
+def plot_modulus(RXs, estim_err=False, self_simi_err=False, bootstrap=True, theta_threshold=0.0075,
+                 axes=None, labels=None, fontsize=40, ylim=3.5):
     """
-    Plot the scattering cross-spectrum C_S(a,b) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
+    Plot the scattering cross-spectrum C_S(a,b) as two graphs : |C_S| and Arg(C_S).
 
     :param RXs: ModelOutput or list of ModelOutput
-    :param estim_bar: display estimation error due to estimation on several realizations
-    :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
-    :param bootstrap: use boostrap for estimation error
+    :param estim_err: display estimation error due to estimation on several realizations
+    :param self_simi_err: display self-similarity error, it is a measure of scale regularity
+    :param theta_threshold: rules phase instability
+    :param axes: custom axes: array of size 2 x labels
     :param labels: list of labels for each model output
-    :param phase_threshold: rules phase instability
     :param fontsize: labels fontsize
     :param ylim: above y limit of modulus graph
-    :param axes: custom axes: array of size 2 x labels
     :return:
     """
-    if isinstance(RXs, ModelOutput):
+    if isinstance(RXs, DescribedTensor):
         RXs = [RXs]
     if labels is not None and len(RXs) != len(labels):
         raise ValueError("Invalid number of labels.")
-    if estim_bar:
+    if estim_err:
         raise ValueError("Estim error plot not yet supported.")
+    if axes is not None and axes.size != 2 * len(RXs):
+        raise ValueError(f"Existing axes must be provided as an array of size {2 * len(RXs)}")
+
+    axes = None if axes is None else axes.reshape(2, len(RXs))
 
     # infer model type
     if 'j1' in RXs[0].idx_info:
@@ -459,52 +438,51 @@ def plot_modulus(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True,
     else:
         raise ValueError("Unrecognized model type.")
 
-    if self_simi_bar and model_type == 'covstat':
+    if self_simi_err and model_type == 'covstat':
         raise ValueError("Impossible to output self-similarity error on covstat model. Use a cov model instead.")
 
     labels = labels or [''] * len(RXs)
-    labels_here = labels
     i_graphs = np.arange(len(labels))
     columns = RXs[0].idx_info.columns
     J = RXs[0].idx_info.j.max() if 'j' in columns else RXs[0].idx_info.j1.max()
     N = RXs[0].idx_info.n1.max() + 1
 
-    C_env = torch.zeros(len(labels_here), J-1, J-1, 2)
-    model_bias = torch.zeros(len(labels_here), J-1, J-1)
-    estim_err = torch.zeros(len(labels_here), J-1, J-1)
+    C_env = torch.zeros(len(labels), J - 1, J - 1, 2)
+    model_bias = torch.zeros(len(labels), J - 1, J - 1)
+    estim_err = torch.zeros(len(labels), J - 1, J - 1)
 
-    for i_lb, (RX, lb, color) in enumerate(zip(RXs, labels_here, COLORS)):
-        norm2 = RX.select(pivot='n1', m_type='m00', q=2, lp=False)[:, :, 0].unsqueeze(-1)  # N x J x 1
+    for i_lb, (RX, lb, color) in enumerate(zip(RXs, labels, COLORS)):
+        norm2 = RX.select(pivot='n1', m_type='m00', q=2, low=False)[:, :, 0].unsqueeze(-1)  # N x J x 1
 
-        for (a, b) in product(range(J-1), range(-J+1, 0)):
+        for (a, b) in product(range(J - 1), range(-J + 1, 0)):
             if a - b >= J:
                 continue
 
             # prepare covariances
             if model_type == 'cov':
-                C_env_nj = torch.zeros(N, J+b-a, 2)
-                for j1 in range(a, J+b):
-                    coeff = RX.select(pivot='n1', m_type='m11', j1=j1, jp1=j1-a, j2=j1-b, lp=False)[:, 0, :]
-                    coeff /= norm2[:, j1, ...].pow(0.5) * norm2[:, j1-a, ...].pow(0.5)
-                    C_env_nj[:, j1-a, :] = coeff
+                C_env_nj = torch.zeros(N, J + b - a, 2)
+                for j1 in range(a, J + b):
+                    coeff = RX.select(pivot='n1', m_type='m11', j1=j1, jp1=j1 - a, j2=j1 - b, low=False)[:, 0, :]
+                    coeff /= norm2[:, j1, ...].pow(0.5) * norm2[:, j1 - a, ...].pow(0.5)
+                    C_env_nj[:, j1 - a, :] = coeff
 
                 C_env_j = C_env_nj.mean(0)
-                C_env[i_lb, a, J-1+b, :] = C_env_j.mean(0)
-                if b == -J+a+1:
-                    model_bias[i_lb, a, J-1+b] = 0.0
+                C_env[i_lb, a, J - 1 + b, :] = C_env_j.mean(0)
+                if b == -J + a + 1:
+                    model_bias[i_lb, a, J - 1 + b] = 0.0
                 else:
-                    model_bias[i_lb, a, J-1+b] = cplx.modulus(C_env_j - C_env_j.mean(0, keepdim=True)) \
-                        .pow(2.0).sum(0).div(J+b-a-1).pow(0.5)
+                    model_bias[i_lb, a, J - 1 + b] = cplx.modulus(C_env_j - C_env_j.mean(0, keepdim=True)) \
+                        .pow(2.0).sum(0).div(J + b - a - 1).pow(0.5)
                 # compute estimation error
                 if bootstrap:
                     mean, var = bootstrap_variance_complex(C_env_nj.transpose(0, 1), C_env_nj.shape[0], 20000)
-                    estim_err[i_lb, a, J-1+b] = var.mean(0).pow(0.5)
+                    estim_err[i_lb, a, J - 1 + b] = var.mean(0).pow(0.5)
                 else:
-                    estim_err[i_lb, a, J-1+b] = (cplx.modulus(C_env_nj).pow(2.0).mean(0) -
-                                                 cplx.modulus(C_env_nj.mean(0)).pow(2.0)) / (N-1)
+                    estim_err[i_lb, a, J - 1 + b] = (cplx.modulus(C_env_nj).pow(2.0).mean(0) -
+                                                     cplx.modulus(C_env_nj.mean(0)).pow(2.0)) / (N - 1)
             else:
-                coeff_ab = RX.select(pivot='n1', m_type='m11', alpha=a, beta=b, lp=False)[:, 0, :]
-                C_env[i_lb, a, J-1+b, :] = coeff_ab.mean(0)
+                coeff_ab = RX.select(pivot='n1', m_type='m11', alpha=a, beta=b, low=False)[:, 0, :]
+                C_env[i_lb, a, J - 1 + b, :] = coeff_ab.mean(0)
 
     C_env, C_env_mod = cplx.to_np(C_env), np.abs(cplx.to_np(C_env))
     model_bias, estim_err = to_numpy(model_bias), to_numpy(estim_err)
@@ -517,32 +495,37 @@ def plot_modulus(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True,
 
     # phase
     C_env_arg = np.angle(C_env)
-    C_env_arg[C_env < phase_threshold] = 0.0
+    C_env_arg[C_env < theta_threshold] = 0.0
 
     def plot_modulus(i_lb, lb, y, y_err, y_err_estim):
         for alpha in range(J - 1):
             betas = np.arange(-J + 1 + alpha, 0)
-            if self_simi_bar:
-                plt.errorbar(betas, y[alpha, alpha:], yerr=y_err[alpha, alpha:], capsize=4)
-                if estim_bar:
+            if self_simi_err:
+                plt.errorbar(betas, y[alpha, alpha:], yerr=y_err[alpha, alpha:], capsize=4,
+                            label=lb if alpha == 0 else '')
+                if self_simi_err:
                     eb = plt.errorbar(betas + 0.05, y[alpha, alpha:], yerr=y_err_estim[alpha, alpha:],
                                       capsize=4, fmt=' ')
                     eb[-1][0].set_linestyle('--')
             else:
-                plt.plot(betas, y[alpha, alpha:])
+                plt.plot(betas, y[alpha, alpha:], label=lb if alpha == 0 else '')
                 plt.scatter(betas, y[alpha, alpha:], marker='+')
-        plt.title(lb, fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
+        plt.xticks(np.arange(-J + 1, 0), [(rf'${beta}$' if beta % 2 == 1 else '') for beta in np.arange(-J + 1, 0)],
+                   fontsize=fontsize)
+        plt.xlabel(r'$b$', fontsize=fontsize)
         plt.ylim(-0.02, ylim)
         if i_lb == 0:
             plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
-            plt.ylabel(r'$\mathrm{Modulus}$', fontsize=fontsize)
+#             plt.ylabel(r'$\mathrm{Modulus}$', fontsize=fontsize)
             plt.yticks(fontsize=fontsize)
-        else:
-            plt.tick_params(labelleft=False)
+#         else:
+#             plt.tick_params(labelleft=False)
         plt.locator_params(axis='x', nbins=J - 1)
-        plt.tick_params(labelbottom=False)
+#         plt.tick_params(labelbottom=False)
         plt.locator_params(axis='y', nbins=5)
+        plt.title("Scattering spectrum \n (Modulus)", fontsize=fontsize)
+        plt.legend(prop={'size': 15})
 
     def plot_phase(i_lb, y):
         for alpha in range(J - 1):
@@ -555,15 +538,16 @@ def plot_modulus(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True,
                    [r'$-\frac{\pi}{4}$', r'$-\frac{\pi}{8}$', r'$0$', r'$\frac{\pi}{8}$', r'$\frac{\pi}{4}$'],
                    fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
-        plt.xlabel(r'$b$', fontsize=fontsize + 10)
-        if i_lb == 0:
-            plt.ylabel(r'$\mathrm{Phase}$', fontsize=fontsize)
-        else:
-            plt.tick_params(labelleft=False)
+        plt.xlabel(r'$b$', fontsize=fontsize)
+#         if i_lb == 0:
+#             plt.ylabel(r'$\mathrm{Phase}$', fontsize=fontsize)
+#         else:
+#             plt.tick_params(labelleft=False)
+        plt.title("Scattering spectrum \n (Phase)", fontsize=fontsize)
 
     if axes is None:
         plt.figure(figsize=(max(len(labels), 5) * 3, 10))
-    for i_lb, lb in enumerate(labels_here):
+    for i_lb, lb in enumerate(labels):
         if axes is not None:
             plt.sca(axes[0, i_lb])
             ax_mod = axes[0, i_lb]
@@ -574,7 +558,7 @@ def plot_modulus(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True,
             ax_mod.yaxis.set_label_coords(-0.18, 0.5)
         plot_modulus(i_lb, lb, C_env_mod[i_lb], model_bias[i_lb], estim_err[i_lb])
 
-    for i_lb, lb in enumerate(labels_here):
+    for i_lb, lb in enumerate(labels):
         if axes is not None:
             plt.sca(axes[1, i_lb])
             ax_ph = axes[1, i_lb]
@@ -591,3 +575,41 @@ def plot_modulus(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True,
                          bbox_to_anchor=(1.3, 2.25, 0, 0))
         for legobj in leg.legendHandles:
             legobj.set_linewidth(5.0)
+
+
+def plot_dashboard(RXs, estim_err=False, self_simi_err=False, bootstrap=True, theta_threshold=0.0075,
+                   labels=None, linewidth=3.0, fontsize=20, ylim_phase=0.09, ylim_modulus=2.0, figsize=None):
+    """
+    Plot the scattering covariance dashboard for multi-scale processes composed of:
+        - (wavelet power spectrum) sigma^2(j)
+        - (sparsity factors) s^2(j)
+        - (phase-envelope cross-spectrum) C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|})
+        - (scattering cross-spectrum) C_S(a,b) as two graphs : |C_S| and Arg(C_S)
+
+    :param RXs:
+    :param estim_err:
+    :param self_simi_err:
+    :param bootstrap:
+    :param theta_threshold:
+    :param labels:
+    :param linewidth:
+    :param fontsize:
+    :param ylim_phase:
+    :param ylim_modulus:
+    :param figsize:
+    :return:
+    """
+    if isinstance(RXs, DescribedTensor):
+        RXs = [RXs]
+    fig, axes = plt.subplots(2, 2 + len(RXs), figsize=figsize or (10 + 5 * (len(RXs) - 1), 10))
+
+    # marginal moments sigma^2 and s^2
+    plot_marginal_moments(RXs, estim_err, axes[:, 0], labels, linewidth, fontsize)
+
+    # phase-envelope cross-spectrum
+    plot_cross_phased(RXs, estim_err, self_simi_err, theta_threshold, axes[:, 1], labels, fontsize, False, ylim_phase)
+
+    # scattering cross spectrum
+    plot_modulus(RXs, estim_err, self_simi_err, bootstrap, theta_threshold, axes[:, 2:], labels, fontsize, ylim_modulus)
+
+    plt.tight_layout()
