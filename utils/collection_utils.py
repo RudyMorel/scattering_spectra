@@ -1,7 +1,6 @@
 from typing import *
 import itertools
 import numpy as np
-import networkx as nx
 
 
 def transpose(li: Iterable[Iterable]) -> List[List]:
@@ -44,16 +43,6 @@ def dfs_edges(g, source=None, depth_limit=None):
                         stack.append((child, depth_now - 1, iter(g[child])))
             except StopIteration:
                 stack.pop()
-
-
-def dfs_tree(g, source=None, depth_limit=None):
-    u = nx.DiGraph()
-    if source is None:
-        u.add_nodes_from(g)
-    else:
-        u.add_nodes_from(source)
-    u.add_edges_from(dfs_edges(g, source, depth_limit))
-    return u
 
 
 def concat_list(a: List[List]) -> List:

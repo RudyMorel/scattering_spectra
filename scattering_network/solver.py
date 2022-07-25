@@ -1,5 +1,5 @@
+""" Manage generation algorithm. """
 from typing import *
-from tqdm import tqdm
 from termcolor import colored
 from time import time
 import numpy as np
@@ -21,7 +21,7 @@ def compute_w_l2(weights, model, w_gap, nchunks):
     # weights = {'marginal': 100, 'mixed': 10, 'tenv': 10, 'senv': 10, 'tsenv': 5}
     # # weights = {'norm1': 10, 'norm2': 5, 'norm2lpcross': 5, 'norm2lpmixed': 5, 'lev': 7, 'zum': 1e-12}# for perfect L
 
-    nbs = {m_type: model.count_out_channels(m_type=m_type) for m_type in model.m_types}
+    nbs = {m_type: model.count_coefficients(m_type=m_type) for m_type in model.m_types}
 
     weights_sum = sum([weights[m_type] * nbs[m_type] for m_type in model.m_types])
     weights = {key: weights[key] / weights_sum for key in weights.keys()}
@@ -29,7 +29,7 @@ def compute_w_l2(weights, model, w_gap, nchunks):
     for i_chunk in range(nchunks):
         w_l2[i_chunk] = torch.ones_like(w_gap[i_chunk])
         for m_type in model.m_types:
-            coeff_type_mask = model.idx_info_chunked[-1][i_chunk].where(m_type=m_type)
+            coeff_type_mask = model.descri_chunked[-1][i_chunk].where(m_type=m_type)
             w_l2[i_chunk][coeff_type_mask] *= weights[m_type]
 
     assert abs(sum([w.sum() for w in w_l2]) - 1.0) < 1e-6
@@ -38,10 +38,11 @@ def compute_w_l2(weights, model, w_gap, nchunks):
 
 
 class Solver(nn.Module):
+    """ A class that contains all information necessary for generation. """
     def __init__(self, model: ModuleChunk, loss: nn.Module,
                  xf: Optional[torch.Tensor] = None, Rxf: Optional[DescribedTensor] = None,
                  x0: Optional[torch.Tensor] = None,
-                 weights: Optional[Dict[str, float]] = None, cuda: bool = False, relative_optim: bool = False,):
+                 weights: Optional[Dict[str, float]] = None, cuda: bool = False, relative_optim: bool = False):
         super(Solver, self).__init__()
 
         self.model = model
@@ -70,7 +71,7 @@ class Solver(nn.Module):
             lRxf = [-self.loss.compute_gap(None, Rxf_chunk, None) for Rxf_chunk in self.Rxf]
             self.w_gap = [(relu(cplx.modulus(lRxf_chunk) - eps) + eps) ** (-1) for lRxf_chunk in lRxf]
 
-            nbs = {m_type: model.count_out_channels(m_type=m_type) for m_type in model.m_types}
+            nbs = {m_type: model.count_coefficients(m_type=m_type) for m_type in model.m_types}
             N_total, scat = sum(nbs.values()), len(model.m_types)
             if weights is None:
                 weights = {m_type: 1 / (scat * nbs[m_type]) for m_type in model.m_types}
@@ -82,7 +83,7 @@ class Solver(nn.Module):
             Rx0_chunk = self.model(self.format(x0, requires_grad=False), i_chunk)
             self.loss0 += self.loss(Rx0_chunk, self.Rxf[i_chunk], self.w_gap[i_chunk], self.w_l2[i_chunk]).detach().cpu().numpy()
 
-    def format(self, x, requires_grad=True):
+    def format(self, x: np.ndarray, requires_grad=True):
         """ Transforms x into a compatible format for the embedding. """
         x = cplx.from_np(x.reshape(1, self.N, -1), tensor=Tensor)
         if self.is_cuda:
@@ -90,7 +91,8 @@ class Solver(nn.Module):
         x = Variable(x, requires_grad=requires_grad)
         return x
 
-    def joint(self, x):
+    def joint(self, x: np.ndarray):
+        """ Computes the loss on current vector. """
         # format x and set gradient to 0
         x_torch = self.format(x)
 
@@ -124,7 +126,7 @@ class Solver(nn.Module):
             total_loss += loss
             total_grad_x += grad_x
 
-        self.res = total_loss, total_grad_x.ravel(), res_max  # todo: divide loss by the number of chunks ?
+        self.res = total_loss, total_grad_x.ravel(), res_max
 
         return total_loss, total_grad_x.ravel()
 
@@ -134,7 +136,9 @@ class SmallEnoughException(Exception):
 
 
 class CheckConvCriterion:
-    def __init__(self, solver, tol, max_wait=1000, save_data_evolution_p=False):
+    """ A callback function given to the optimizer. """
+    def __init__(self, solver: Solver, tol: float,
+                 max_wait: Optional[int] = 1000, save_data_evolution_p: Optional[bool] = False):
         self.solver = solver
         self.tol = tol
         self.result = None
@@ -154,7 +158,7 @@ class CheckConvCriterion:
 
         self.curr_xk = cplx.to_np(solver.xf).real[0, 0, 0, :]
 
-    def __call__(self, xk):
+    def __call__(self, xk: np.ndarray):
         err, grad_xk, max_gap = self.solver.res
         gerr = np.max(np.abs(grad_xk))
         err, gerr = float(err), float(gerr)
@@ -187,23 +191,22 @@ class CheckConvCriterion:
         else:
             self.wait += 1
 
-    def print_info_line(self, msg=''):
+    def print_info_line(self, msg: Optional[str] = ''):
         delta_t = time() - self.tic
-        tqdm.write(colored(
+        print(colored(
             f"{self.counter:6}it in {self.hms_string(delta_t)} ( {self.counter / delta_t:.2f}it/s )"
             + " ........ "
             + f"{np.sqrt(self.err):.2E} -- {max(self.max_gap.values()):.2E} -- {self.gerr:.2E}",
-            'cyan')
-        )
-        tqdm.write(colored(
+            'cyan'))
+        print(colored(
             "".join([f"\n ----- {m_type} {value:.2e}, " for m_type, value in self.max_gap.items()])
             + msg,
-            'green')
-        )
+            'green'))
 
     @staticmethod
-    def hms_string(sec_elapsed):
+    def hms_string(sec_elapsed: float):
+        """ Format  """
         h = int(sec_elapsed / (60 * 60))
         m = int((sec_elapsed % (60 * 60)) / 60)
         s = sec_elapsed % 60.
-        return "{}:{:>02}:{:>05.2f}".format(h, m, s)
+        return f"{h}:{m:>02}:{s:>05.2f}"

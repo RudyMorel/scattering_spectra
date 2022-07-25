@@ -1,3 +1,4 @@
+""" Implements Morlet, Battle-Lemarie, Bump steerable and Meyer wavelets used in convolution layers. """
 import numpy as np
 from scipy.fftpack import ifft
 
@@ -8,8 +9,7 @@ from scipy.fftpack import ifft
 
 
 def morlet_1d(N, xi, sigma, normalize='l1', P_max=5, eps=1e-7):
-    """
-    Computes the Fourier transform of a Morlet filter.
+    """ Computes the Fourier transform of a Morlet filter.
 
     A Morlet filter is the sum of a Gabor filter and a low-pass filter
     to ensure that the sum has exactly zero mean in the temporal domain.
@@ -75,8 +75,7 @@ def morlet_1d(N, xi, sigma, normalize='l1', P_max=5, eps=1e-7):
 
 
 def adaptive_choice_P(sigma, eps=1e-7):
-    """
-    Adaptive choice of the value of the number of periods in the frequency
+    """ Adaptive choice of the value of the number of periods in the frequency
     domain used to compute the Fourier transform of a Morlet wavelet.
 
     This function considers a Morlet wavelet defined as the sum
@@ -120,14 +119,13 @@ def adaptive_choice_P(sigma, eps=1e-7):
 
 
 def periodize_filter_fourier(h_f, nperiods=1):
-    """
-    Computes a periodization of a filter provided in the Fourier domain.
+    """ Computes a periodization of a filter provided in the Fourier domain.
 
     Parameters
     ----------
     h_f : array_like
         complex numpy array of shape (N*n_periods,)
-    nperiods: int, optional
+    n_periods: int, optional
         Number of periods which should be used to periodize
 
     Returns
@@ -143,14 +141,13 @@ def periodize_filter_fourier(h_f, nperiods=1):
 
 
 def get_normalizing_factor(h_f, normalize='l1'):
-    """
-    Computes the desired normalization factor for a filter defined in Fourier.
+    """ Computes the desired normalization factor for a filter defined in Fourier.
 
     Parameters
     ----------
     h_f : array_like
         numpy vector containing the Fourier transform of a filter
-    normalize : string, optional
+    normalized : string, optional
         desired normalization type, either 'l1' or 'l2'. Defaults to 'l1'.
 
     Returns
@@ -172,8 +169,7 @@ def get_normalizing_factor(h_f, normalize='l1'):
 
 
 def gauss_1d(N, sigma, normalize='l1', P_max=5, eps=1e-7):
-    """
-    Computes the Fourier transform of a low pass gaussian window.
+    """ Computes the Fourier transform of a low pass gaussian window.
 
     \\hat g_{\\sigma}(\\omega) = e^{-\\omega^2 / 2 \\sigma^2}
 
@@ -225,8 +221,7 @@ def gauss_1d(N, sigma, normalize='l1', P_max=5, eps=1e-7):
 
 
 def compute_sigma_psi(xi, Q, r=np.sqrt(0.5)):
-    """
-    Computes the frequential width sigma for a Morlet filter of frequency xi
+    """ Computes the frequential width sigma for a Morlet filter of frequency xi
     belonging to a family with Q wavelets.
 
     The frequential width is adapted so that the intersection of the
@@ -240,7 +235,7 @@ def compute_sigma_psi(xi, Q, r=np.sqrt(0.5)):
 
 
 def compute_morlet_parameters(J, Q, max_frequency):
-    """Compute central frequencies and bandwidth of morlet dictionary."""
+    """ Compute central frequencies and bandwidth of morlet dictionary. """
     scaling = np.logspace(0, -J, num=J * Q, endpoint=False, base=2)
     mu_freq = max_frequency * scaling
     sigma_freq = np.array([compute_sigma_psi(m, Q) for m in mu_freq])
@@ -248,8 +243,7 @@ def compute_morlet_parameters(J, Q, max_frequency):
 
 
 def compute_morlet_low_pass_parameters(J, Q, max_frequency):
-    """
-    Compute central frequency and bandwidth of low-pass filter.
+    """ Compute central frequency and bandwidth of low-pass filter.
     This function uses the oracle sigma_{low} = sigma_J * (2.372 Q + 1.109) where sigma_{low}
     is the bandwidth of the low pass filter, sigma_J is the bandwidth of a morlet wavelet centered in max_frequency
     2^{-J} and :math:Q is the number of wavelet per scales. This function was empiricaly found to minimise the
@@ -361,7 +355,7 @@ def compute_bump_steerable_parameters(J, Q, high_freq=0.5):
 
 
 def low_pass_constants(Q):
-    """Function computing the ideal amplitude and variance for the low-pass of a bump
+    """ Function computing the ideal amplitude and variance for the low-pass of a bump
     wavelet dictionary, given the number of wavelets per scale Q.
     The amplitude and variance are computed by minimizing the frame error eta:
         1 - eta <= sum psi_la ** 2 <= 1 + eta
@@ -476,6 +470,7 @@ def meyer_mother_phi(w):
 
 
 def init_wavelet_param(wav_type, J, Q, high_freq):
+    """ Init central frequencies and frequency width of the band-pass filters. """
     if wav_type == 'morlet':
         xi, sigma = compute_morlet_parameters(J, Q, high_freq)
     elif wav_type == 'battle_lemarie':
@@ -497,6 +492,7 @@ def init_wavelet_param(wav_type, J, Q, high_freq):
 
 
 def init_band_pass(wav_type, T, J, Q, high_freq, wav_norm):
+    """ Compute the band-pass Fourier transforms. """
     xis, sigmas = init_wavelet_param(wav_type, J, Q, high_freq)
 
     if wav_type == "morlet":
@@ -520,10 +516,8 @@ def init_band_pass(wav_type, T, J, Q, high_freq, wav_norm):
 
 
 def init_low_pass(wav_type, T, J, Q, high_freq):
-    """
-    Compute the low-pass Fourier transforms assuming it has the same variance
-    as the lowest-frequency wavelet.
-    """
+    """ Compute the low-pass Fourier transforms assuming it has the same variance
+    as the lowest-frequency wavelet. """
     xis, sigmas = init_wavelet_param(wav_type, J, Q, high_freq)
     xis = np.append(xis, 0.0)
 

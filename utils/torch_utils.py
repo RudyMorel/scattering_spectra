@@ -25,7 +25,6 @@ def multid_where(a: Iterable, b: Iterable) -> List:
     :param b: C x n array
     :return: (K) array
     """
-    # todo: check that converting to tuple is ok. tobyte was giving different results for same arrays
     d = {tuple(item): idx for idx, item in enumerate(b)}
     occurences = [d.get(tuple(item)) for item in a]
 
@@ -40,7 +39,6 @@ def multid_where_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     :param b: C x n array
     :return: (K) array
     """
-    # todo: check that converting to tuple is ok. tobyte was giving different results for same arrays
     d = {tuple(item): idx for idx, item in enumerate(b)}
     a_it = a.reshape(-1, a.shape[-1])
     occurences = np.array([d.get(tuple(item)) for item in a_it])

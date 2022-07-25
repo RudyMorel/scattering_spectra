@@ -1,3 +1,5 @@
+""" Implements layers that operate on time. """
+from typing import *
 from collections import namedtuple
 import numpy as np
 import torch
@@ -95,14 +97,17 @@ else:
 
 
 def fft1d_c2c(x):
+    """ The Fourier transform on complex tensors. """
     return fft(x, direction='C2C', inverse=False)
 
 
 def ifft1d_c2c_normed(x):
+    """ The inverse Fourier transform on complex tensors. """
     return fft(x, direction='C2C', inverse=True)
 
 
 class Pad1d(nn.Module):
+    """ Padding base class. """
     def __init__(self, T):
         super(Pad1d, self).__init__()
         self.T = T
@@ -118,9 +123,7 @@ class Pad1d(nn.Module):
 
 
 class ReflectionPad(Pad1d):
-    """
-    Reflection pad.
-    """
+    """ Reflection pad. """
     def __init__(self, T):
         super(ReflectionPad, self).__init__(T)
         unpad_idx = np.arange(T)
@@ -135,12 +138,8 @@ class ReflectionPad(Pad1d):
 
 
 class Wavelet(SubModuleChunk):
-    """
-    Wavelet operator.
-    """
+    """ Wavelet convolutional operator. """
     def __init__(self, T, J, Q, wav_type, high_freq, wav_norm, layer_r, sc_idxer):
-        # TODO: implement normalization as a separate layer
-        # TODO: implement low pass filter as a separate layer
         super(Wavelet, self).__init__()
         self.T, self.J, self.Q, self.layer_r = 2 * T, J, Q, layer_r
         self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
@@ -155,15 +154,15 @@ class Wavelet(SubModuleChunk):
         self.masks = []
         self.sc_pairing = []
 
-    def external_surjection_aux(self, input_idx_info):
-        """Return IdxInfo which depends on row to be computed."""
-        n, r, sc, *js, a, low = input_idx_info
-        idx_info_l = []
+    def external_surjection_aux(self, input_descri):
+        """ Return description that can be computed on input_descri. """
+        n, r, sc, *js, a, low = input_descri
+        descri_l = []
         out_columns = ['n1', 'r', 'sc'] + [f'j{r}' for r in range(1, self.sc_idxer.r_max + 1)] + ['a', 'low']
 
         # from path j1, ..., j{r-1} associate all paths j1, ..., j{r-1}, jr
         for jrp1 in range(0 if r == 0 else js[r-1] + 1, self.sc_idxer.JQ() + 1):
-            row = [-1] * (5 + self.sc_idxer.r_max)  # todo: replace -1 values with None
+            row = [-1] * (5 + self.sc_idxer.r_max)
 
             js_here = self.sc_idxer.idx_to_path(sc)
             js_here += (jrp1, )
@@ -175,22 +174,22 @@ class Wavelet(SubModuleChunk):
             row[3: 3 + self.layer_r] = js_here
 
             # a, low
-            row[-2:] = a, jrp1 == self.sc_idxer.JQ()  # todo: is it the correct phase "a" to assign ?
+            row[-2:] = a, jrp1 == self.sc_idxer.JQ()
 
-            idx_info_l.append(namedtuple('IdxInfo', out_columns)(*row))
+            descri_l.append(namedtuple('Descri', out_columns)(*row))
 
-        return idx_info_l
+        return descri_l
 
-    def internal_surjection(self, row):
-        """From output_idx_info return the idxinfos that depend on output_idx_info to be computed."""
+    def internal_surjection(self, output_descri_row: NamedTuple) -> List[NamedTuple]:
+        """ Return rows that can be computed on output_descri_row. """
         return []
 
-    def init_one_chunk(self, input: DescribedTensor, output_idx_info: Description, i_chunk: int) -> None:
-        """Init the parameters of the model required to compute output_idx_info from input_idx_info."""
+    def init_one_chunk(self, input: DescribedTensor, output_descri: Description, i_chunk: int) -> None:
+        """ Init the parameters of the model required to compute output_descri from input. """
         columns_previous_layer = ['n1'] + [f'j{r}' for r in range(1, self.layer_r)]
-        n_j1 = output_idx_info.to_array(columns_previous_layer)
-        sc_pairing_left = multid_where_np(n_j1, input.idx_info.to_array(columns_previous_layer))
-        sc_pairing_right = output_idx_info.to_array([f'j{self.layer_r}'])[:, 0]
+        n_j1 = output_descri.to_array(columns_previous_layer)
+        sc_pairing_left = multid_where_np(n_j1, input.descri.to_array(columns_previous_layer))
+        sc_pairing_right = output_descri.to_array([f'j{self.layer_r}'])[:, 0]
         sc_pairing = np.stack([sc_pairing_left, sc_pairing_right], axis=1)
 
         self.sc_pairing.append(sc_pairing)
@@ -198,17 +197,16 @@ class Wavelet(SubModuleChunk):
     def clear_params(self) -> None:
         self.sc_pairing = []
 
-    def forward_chunk(self, x, i_chunk):
-        """
-        Performs in Fourier the convolution x * psi_lam.
+    def forward_chunk(self, x: torch.tensor, i_chunk: int):
+        """ Performs in Fourier the convolution x * psi_lam.
 
         :param x: (C) x Jr x A x T x 2 tensor
         :return: J{r+1} x T x 2 tensor
         """
-        idx_info = self.idx_info[i_chunk]
+        descri = self.descri[i_chunk]
         pairing = self.sc_pairing[i_chunk]
 
-        if self.layer_r > 1:  # todo: implement modulus as a layer
+        if self.layer_r > 1:
             x = cplx.from_real(cplx.modulus(x))
 
         # since idx[:,0] is always lower than x_pad.shape[2], doing fft in second is always optimal
@@ -217,4 +215,48 @@ class Wavelet(SubModuleChunk):
         x_filt_hat = cplx.mul(x_hat[..., pairing[:, 0], :, :], self.filt_hat[pairing[:, 1], :, :])
         x_filt = self.Pad.unpad(ifft1d_c2c_normed(x_filt_hat))
 
-        return DescribedTensor(x=None, idx_info=idx_info, y=x_filt.reshape((-1,) + x_filt.shape[-2:]))
+        return DescribedTensor(x=None, descri=descri, y=x_filt.reshape((x_filt.shape[0], -1) + x_filt.shape[-2:]))
+
+
+class SpectrumNormalization(SubModuleChunk):
+    """ After a wavelet layer, divide each band-pass channel by its energy: X*psi_j ->  X*psi_j / (E|X*psi_j|^2)^0.5 """
+    def __init__(self, on_the_fly: Optional[bool] = False, sigma: Optional[DescribedTensor] = None):
+        super(SpectrumNormalization, self).__init__()
+        if not on_the_fly and sigma is None:
+            raise ValueError("SpectrumNormalization requires a power-spectrum to use as normalization.")
+        self.on_the_fly = on_the_fly
+        self.sigma = sigma
+
+        # params
+        self.masks = []
+
+    def external_surjection_aux(self, input_descri: NamedTuple) -> List[NamedTuple]:
+        """ Return description that can be computed on input_descri. """
+        return [input_descri]
+
+    def internal_surjection(self, output_descri_row: NamedTuple) -> List[NamedTuple]:
+        """ Return rows that can be computed on output_descri_row. """
+        return []
+
+    def set_sigma(self, sigma: torch.tensor, i_chunk: int) -> None:
+        self.register_buffer(f'sigma_{i_chunk}', sigma)
+
+    def clear_params(self) -> None:
+        self.masks = []
+
+    def forward_chunk(self, x: torch.tensor, i_chunk: int):
+        """ Performs normalization x * psi_lam -> x * psi_lam / sigma_j. """
+        descri = self.descri[i_chunk]
+        # mask = self.masks[i_chunk]
+
+        if self.on_the_fly:
+            sigma = cplx.modulus(x).pow(2.0).mean(-1).pow(0.5).unsqueeze(-1).unsqueeze(-1)
+        else:
+            if f'sigma_{i_chunk}' not in self.state_dict().keys():
+                sigma = cplx.modulus(x).pow(2.0).mean(-1).pow(0.5).unsqueeze(-1).unsqueeze(-1)
+                self.set_sigma(sigma, i_chunk)
+            sigma = self.state_dict()[f'sigma_{i_chunk}']
+
+        y = x / sigma
+
+        return DescribedTensor(x=None, descri=descri, y=y)
