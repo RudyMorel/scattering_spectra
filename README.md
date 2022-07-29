@@ -54,7 +54,7 @@ Function **generate** from `frontend.py` takes observed data $X$ as input and re
 ```python
 # DATA
 X = load_data(process_name='smrw', B=64, T=4096, lam=0.1, 
-              gamma=1 / 4096 / 256, K=0.03, alpha=0.23, beta=0.23)
+              gamma=1/4096/256, K=0.03, alpha=0.23, beta=0.23)
 
 # GENERATION
 X_gen = generate(X, J=9, S=2, it=10000, cuda=True, tol_optim=1e-4)

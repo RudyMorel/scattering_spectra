@@ -874,16 +874,3 @@ def plot_dashboard(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True, th
     plot_scattering_spectrum(RXs, estim_bar, self_simi_bar, bootstrap, theta_threshold, axes[:, 2:], labels, fontsize, ylim_modulus)
 
     plt.tight_layout()
-
-
-if __name__ == "__main__":
-    # DATA
-    X = load_data(process_name='fbm', B=128, T=8192, H=0.5)  # a B x T array
-
-    # ANALYSIS
-    RX = analyze(X, J=8, high_freq=0.25, moments='cov')  # a DescribedTensor
-
-    # VISUALIZATION
-    plot_dashboard(RX)
-
-    plt.show()
