@@ -196,14 +196,10 @@ class GenDataLoader(ProcessDataLoader):
         model_params = kwargs['model_params']
         N, T, J, Q1, Q2, r_max, wav_type, m_types, moments = \
             (model_params[key] for key in ['N', 'T', 'J', 'Q1', 'Q2', 'r_max', 'wav_type', 'm_types', 'moments'])
-        cut1, cut2, cut3 = kwargs['optim_params']['cutoff1'], kwargs['optim_params']['cutoff2'], kwargs['optim_params']['cutoff3']
         path_str = f"{self.model_name}_{wav_type}_B{B_target}_N{N}_T{T}_J{J}_Q1_{Q1}_Q2_{Q2}_rmax{r_max}_mo_{moments}" \
                    + f"{''.join(mtype[0] for mtype in m_types)}" \
                    + f"_tol{str(int(np.log10(kwargs['optim_params']['tol_optim']))).replace('-', '')}" \
-                   + f"_it{kwargs['optim_params']['it']}" \
-                   + (f"_cut1_{cut1}" if cut1 is not None else "") \
-                   + (f"_cut2_{cut2}" if cut2 is not None else "") \
-                   + (f"_cut3_{cut3}" if cut3 is not None else "")
+                   + f"_it{kwargs['optim_params']['it']}"
         return self.dir_name / path_str
 
     def generate_trajectory(self, X, RX, model_params, optim_params, gpu, dirpath):
@@ -273,45 +269,19 @@ class GenDataLoader(ProcessDataLoader):
         relative_optim, it = optim_params['relative_optim'], optim_params['it']
 
         tic = time()
-        if (optim_params['cutoff2'] is not None) or (optim_params['cutoff3'] is not None):
-            lam_cutoff_schedule = 2.0 ** np.arange(10)
-            for i, lam_cutoff in enumerate(lam_cutoff_schedule):
-                x_start = x0 if i == 0 else x_opt[None, :]
-                solver_fn.loss.lam_cutoff = lam_cutoff * 1e-6
-                if i < lam_cutoff_schedule.size - 1:
-                    it = 1000
-                else:
-                    it = max(1000, optim_params['it'] - 1000 * lam_cutoff_schedule.size)
-
-                func = solver_fn.joint if jac else solver_fn.function
-
-                print(f"Optim cutoff weight: {solver_fn.loss.lam_cutoff:.2e}")
-
-                try:
-                    res = scipy.optimize.minimize(
-                        func, x_start, method=method, jac=jac, callback=check_conv_criterion,
-                        options={'ftol': 1e-24, 'gtol': 1e-24, 'maxiter': it, 'maxfun': maxfun}
-                    )
-                    loss_tmp, x_opt, it, msg = res['fun'], res['x'], res['nit'], res['message']
-                except SmallEnoughException:  # raised by check_conv_criterion
-                    print('SmallEnoughException')
-                    x_opt = check_conv_criterion.result
-                    it = check_conv_criterion.counter
-                    msg = "SmallEnoughException"
-        else:
-            # Decide if the function provides gradient or not
-            func = solver_fn.joint if jac else solver_fn.function
-            try:
-                res = scipy.optimize.minimize(
-                    func, x0, method=method, jac=jac, callback=check_conv_criterion,
-                    options={'ftol': 1e-24, 'gtol': 1e-24, 'maxiter': it, 'maxfun': maxfun}
-                )
-                loss_tmp, x_opt, it, msg = res['fun'], res['x'], res['nit'], res['message']
-            except SmallEnoughException:  # raised by check_conv_criterion
-                print('SmallEnoughException')
-                x_opt = check_conv_criterion.result
-                it = check_conv_criterion.counter
-                msg = "SmallEnoughException"
+        # Decide if the function provides gradient or not
+        func = solver_fn.joint if jac else solver_fn.function
+        try:
+            res = scipy.optimize.minimize(
+                func, x0, method=method, jac=jac, callback=check_conv_criterion,
+                options={'ftol': 1e-24, 'gtol': 1e-24, 'maxiter': it, 'maxfun': maxfun}
+            )
+            loss_tmp, x_opt, it, msg = res['fun'], res['x'], res['nit'], res['message']
+        except SmallEnoughException:  # raised by check_conv_criterion
+            print('SmallEnoughException')
+            x_opt = check_conv_criterion.result
+            it = check_conv_criterion.counter
+            msg = "SmallEnoughException"
 
         toc = time()
 
@@ -350,7 +320,6 @@ class GenDataLoader(ProcessDataLoader):
 
 def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
              moments='cov', mtypes=None, qs=None, nchunks=1, it=10000, tol_optim=5e-4,
-             cutoff1=None, cutoff2=None, cutoff3=None,
              generated_dir=None, exp_name=None, cuda=False, gpus=None, num_workers=1):
     """ Generate new realizations of X from a scattering covariance model.
     We first compute the scattering covariance representation of X and then sample it using gradient descent.
@@ -417,9 +386,6 @@ def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav
         'method': 'L-BFGS-B',
         'jac': True,  # origin of gradient, True: provided by solver, else estimated
         'tol_optim': tol_optim,
-        'cutoff1': cutoff1,
-        'cutoff2': cutoff2,
-        'cutoff3': cutoff3
     }
 
     # multi-processed generation

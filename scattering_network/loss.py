@@ -13,7 +13,6 @@ class MSELossScat(nn.Module):
     def __init__(self):
         super(MSELossScat, self).__init__()
         self.max_gap = {}
-        self.lam_cutoff = 1e-5
 
     def compute_gap(self, input: Optional[DescribedTensor], target: DescribedTensor, weights):
         if input is None:
