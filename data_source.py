@@ -17,7 +17,6 @@ from global_const import *
 
 Notations
 - B: number of batch (i.e. realizations of a process)
-- S: number of synthesis of a process (for our generated model)
 - N: number of data channels (N>1 : multivariate process)
 - T: number of data samples (time samples)
 """
@@ -25,9 +24,8 @@ Notations
 
 class TimeSeriesBase:
     """ A base class that stores generated or real world data. """
-    def __init__(self, B, S, N, T, process_name, X):
+    def __init__(self, B, N, T, process_name, X):
         self.B = B
-        self.S = S
         self.N = N
         self.T = T
         self.process_name = process_name
@@ -37,30 +35,35 @@ class TimeSeriesBase:
     def describe(self):
         return self.process_name
 
-    def __call__(self, r=None, s=None):
-        if r is None and s is None:
+    def __call__(self, r=None):
+        if r is None:
             return self.X
-        elif r is None:
-            return self.X[:, s, :, :]
-        elif s is None:
-            return self.X[r, ...]
-        return self.X[r, s, :, :]
+        return self.X[r, :, :]
 
 
 class TimeSeriesNpzFile(TimeSeriesBase):
     """ A time-series class obtained from loading a .npz file. """
-    def __init__(self, filepath=None, ld=None):
+    def __init__(self, filepath=None):
         self.filepath = filepath
-        if ld is None:
-            ld = np.load(filepath, allow_pickle=True)
-        R, S, N, T = ld['B'], ld['S'], ld['N'], ld['T']
+        ld = np.load(filepath, allow_pickle=True)
+        B, N, T = ld['B'], ld['N'], ld['T']
         process_name, X = ld['process_name'], ld['X']
-        super(TimeSeriesNpzFile, self).__init__(R, S, N, T, process_name, X)
+        super(TimeSeriesNpzFile, self).__init__(B, N, T, process_name, X)
 
         # add other attributes
         for (key, value) in ld.items():
             if key not in ['B', 'S', 'N', 'T', 'process_name', 'x']:
                 self.__dict__[key] = value
+
+
+class TimeSeriesDir(TimeSeriesBase):
+    """ A time-series class obtained from a directory of trajectories. """
+    def __init__(self, dirpath: Path, B: Optional[int] = None):
+        X = np.concatenate([np.load(str(fn)) for fn in dirpath.iterdir()])
+        if B is not None:
+            X = X[:B, :, :]
+        B, N, T = X.shape
+        super(TimeSeriesDir, self).__init__(B, N, T, dirpath.name[:5], X)
 
 
 """
@@ -72,7 +75,7 @@ class ProcessDataLoader:
     """ Base process data loader class. """
     def __init__(self, model_name: str, dirname: Optional[Union[str, Path]] = None, num_workers: Optional[int] = 1):
         self.model_name = model_name
-        self.dir_name = Path(dirname)
+        self.dir_name = Path(__file__).parents[0] / 'cached_dir' if dirname is None else Path(dirname)
         self.num_workers = num_workers
         self.default_kwargs = None
 
@@ -108,7 +111,7 @@ class ProcessDataLoader:
         try:
             X = self.generate_trajectory(**kwargs)
             fname = f"{np.random.randint(1e7, 1e8)}.npy"
-            np.save(str(kwargs['dirpath'] / fname), X[None, None, :, :])
+            np.save(str(kwargs['dirpath'] / fname), X[None, :, :])
         except ValueError as e:
             print(e)
             return
@@ -124,7 +127,7 @@ class ProcessDataLoader:
 
         return kwargs
 
-    def load(self, **kwargs) -> TimeSeriesNpzFile:
+    def load(self, **kwargs) -> TimeSeriesDir:
         """ Loads the data required, generating it if not present in the cache. """
         full_kwargs = self.default_kwargs.copy()
 
@@ -138,21 +141,16 @@ class ProcessDataLoader:
 
         # generate if necessary
         dirpath.mkdir(exist_ok=True)
-        print(f"Data saving dir: {dirpath.name}")
         R_available = len(list(dirpath.glob('*')))
         if R_available < full_kwargs['B']:
+            print(f"Data saving dir: {dirpath.name}")
             self.generate(S_gen=full_kwargs['B'] - R_available, dirpath=dirpath, **full_kwargs)
         if len(list(dirpath.glob('*'))) < full_kwargs['B']:
             print(f"Incomplete generation {len(list(dirpath.glob('*')))}/{full_kwargs['B']}.")
 
         # return available realizations
-        X = np.concatenate([np.load(str(fn)) for fn in dirpath.iterdir()])[:full_kwargs['B'], ...]
-        full_kwargs['process_name'] = self.model_name
-        full_kwargs['S'] = full_kwargs['N'] = 1
-        full_kwargs['B'] = X.shape[0]
-        full_kwargs['T'] = X.shape[-1]
-        full_kwargs['X'] = X
-        return TimeSeriesNpzFile(ld=full_kwargs)
+        print(f"Saved: {dirpath.name}")
+        return TimeSeriesDir(dirpath=dirpath, B=full_kwargs['B'])
 
     def erase(self, **kwargs) -> None:
         """ Erase specified data if present in the cache. """
@@ -202,15 +200,3 @@ class SMRWLoader(ProcessDataLoader):
         L = kwargs['L'] or kwargs['T']
         return skewed_mrw(R=1, T=kwargs['T'], L=L, dt=kwargs['dt'], H=kwargs['H'], lam=kwargs['lam'],
                           K0=kwargs['K'], alpha=kwargs['alpha'], beta=kwargs['beta'], gamma=kwargs['gamma'])
-
-
-class GenerationLoader:
-    """ Loads the different trajectories from a directory containing generated data. """
-    def __init__(self, dir: str):
-        self.dir = Path(dir)
-
-    def load(self, key='x_synt', S=None, t1=None, t2=None):
-        """ Load all trajectories present in the directroy. """
-        Xs = [np.load(str(fname))[key][:, t1:t2] if t1 is not None else np.load(str(fname))[key]
-              for (s, fname) in enumerate(list(self.dir.iterdir())) if (S is None) or (s < S)]
-        return np.stack(Xs)[None, :, :, :]  # R=1, S, N, T

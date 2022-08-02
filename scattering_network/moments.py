@@ -28,7 +28,7 @@ class Marginal(SubModuleChunk):
 
         def extend(row, q): return row + (q, 'm00')
 
-        output_descri_l = [namedtuple('Description', out_columns)(*extend(input_descri, q)) for q in self.qs]
+        output_descri_l = [namedtuple('Descri', out_columns)(*extend(input_descri, q)) for q in self.qs]
 
         return output_descri_l
 

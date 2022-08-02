@@ -29,9 +29,9 @@ plot_dashboard(RX)
 
 ```python
 # DATA
-X1 = load_data(process_name='fbm', B=128, T=32768)
-X2 = load_data(process_name='mrw', B=128, T=32768, lam=0.1)
-X3 = load_data(process_name='smrw', B=128, T=32768, lam=0.1,
+X1 = load_data(process_name='fbm', B=256, T=32768)
+X2 = load_data(process_name='mrw', B=256, T=32768, lam=0.1)
+X3 = load_data(process_name='smrw', B=256, T=32768, lam=0.1,
                gamma=1/32768/256, K=0.07, alpha=0.23, beta=0.23)
 
 # ANALYSIS
@@ -53,11 +53,11 @@ Function **generate** from `frontend.py` takes observed data $X$ as input and re
 
 ```python
 # DATA
-X = load_data(process_name='smrw', B=64, T=4096, lam=0.1, 
+X = load_data(process_name='smrw', B=1, T=4096, lam=0.1, 
               gamma=1/4096/256, K=0.03, alpha=0.23, beta=0.23)
 
 # GENERATION
-X_gen = generate(X, J=9, S=2, it=10000, cuda=True, tol_optim=1e-4)
+X_gen = generate(X, J=9, S=1, it=10000, cuda=True, tol_optim=5e-4)
 
 # VISUALIZATION
 fig, axes = plt.subplots(2,1, figsize=(10,5))

@@ -71,7 +71,7 @@ def load_data(process_name, B, T, cache_dir=None, **data_param):
     dtld = loader[process_name](cache_dir)
     X = dtld.load(B=B, T=T, **data_param).X
 
-    return X[:, 0, 0, :]
+    return X[:, 0, :]
 
 
 ##################
@@ -89,18 +89,16 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     :param Q2: wavelets per octave second layer
     :param r_max: number convolution layers
     :param wav_type: wavelet type
-    :param high_freq: central frequency of mother wavelet
+    :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param wav_norm: wavelet normalization i.e. l1, l2
-    :param moments: moments to compute on scattering i.e. marginal, cov, covstat
+    :param moments: moments to compute on scattering, ex: None, 'marginal', 'cov', 'covstat'
     :param m_types: the type of moments to compute i.e. m00, m10, m11
+    :param qs: if moments == 'marginal' the exponents of the marginal moments
     :param chunk_method: the method to optimize the coefficient graph i.e. quotient_n, graph_optim
     :param nchunks: the number of chunks
 
     :return: a torch module
     """
-    if B > 0 and moments is None:
-        raise ValueError('A scattering model without moments cannot average on several batches.')
-
     module_list = []
 
     # scattering network
@@ -108,7 +106,7 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     W1 = Wavelet(T, J, Q1, wav_type, high_freq, wav_norm, 1, sc_idxer)
     module_list.append(W1)
 
-    if moments == 'covstat':
+    if moments == 'covstat' or sigma is not None:
         module_list.append(SpectrumNormalization(False, sigma))
 
     if r_max > 1:
@@ -135,14 +133,13 @@ def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm):
                                 wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
                                 moments='marginal', m_types=None, qs=[2.0], sigma=None,
                                 chunk_method='quotient_n', nchunks=1)
-    # sigma = marginal_model(X).mean_batch()
-    sigma = marginal_model(X)
+    sigma = marginal_model(X).mean_batch()
 
     return sigma
 
 
 def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-            moments='covstat', m_types=None, nchunks=1, cuda=False):
+            moments='cov', m_types=None, nchunks=1, cuda=False):
     """ Compute sigma^2(j).
     :param X: a R x T array
     :param J: number of octaves
@@ -150,8 +147,8 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
     :param Q2: number of scales per octave on second wavelet layer
     :param wav_type: wavelet type
     :param wav_norm: wavelet normalization i.e. l1, l2
-    :param high_freq: central frequency of mother wavelet
-    :param moments: the type of moments to compute
+    :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
+    :param moments: moments to compute on scattering, ex: None, 'marginal', 'cov', 'covstat'
     :param m_types: m00: sigma^2 and s^2, m10: cp, m11: cm
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param cuda: does calculation on gpu
@@ -200,7 +197,7 @@ class GenDataLoader(ProcessDataLoader):
         N, T, J, Q1, Q2, r_max, wav_type, m_types, moments = \
             (model_params[key] for key in ['N', 'T', 'J', 'Q1', 'Q2', 'r_max', 'wav_type', 'm_types', 'moments'])
         cut1, cut2, cut3 = kwargs['optim_params']['cutoff1'], kwargs['optim_params']['cutoff2'], kwargs['optim_params']['cutoff3']
-        path_str = f"gen_scat_cov_{wav_type}_B{B_target}_N{N}_T{T}_J{J}_Q1_{Q1}_Q2_{Q2}_rmax{r_max}_mo_{moments}" \
+        path_str = f"{self.model_name}_{wav_type}_B{B_target}_N{N}_T{T}_J{J}_Q1_{Q1}_Q2_{Q2}_rmax{r_max}_mo_{moments}" \
                    + f"{''.join(mtype[0] for mtype in m_types)}" \
                    + f"_tol{str(int(np.log10(kwargs['optim_params']['tol_optim']))).replace('-', '')}" \
                    + f"_it{kwargs['optim_params']['it']}" \
@@ -221,7 +218,6 @@ class GenDataLoader(ProcessDataLoader):
         X_torch = cplx.from_np(X)
 
         # sigma = None
-        # if model_params['moments'] == 'covstat':
         sigma = compute_sigma(X_torch, model_params['B'], model_params['T'], model_params['J'],
                               model_params['Q1'], model_params['Q2'],
                               model_params['wav_type'], model_params['high_freq'], model_params['wav_norm'])
@@ -346,18 +342,39 @@ class GenDataLoader(ProcessDataLoader):
         try:
             X = self.generate_trajectory(**kwargs)
             fname = f"{np.random.randint(1e7, 1e8)}.npy"
-            np.save(str(kwargs['dirpath'] / fname), X[None, None, :, :])
+            np.save(str(kwargs['dirpath'] / fname), X[None, :, :])
         except ValueError as e:
             print(e)
             return
 
 
-def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, r_max=2, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
+def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
              moments='cov', mtypes=None, qs=None, nchunks=1, it=10000, tol_optim=5e-4,
              cutoff1=None, cutoff2=None, cutoff3=None,
              generated_dir=None, exp_name=None, cuda=False, gpus=None, num_workers=1):
     """ Generate new realizations of X from a scattering covariance model.
     We first compute the scattering covariance representation of X and then sample it using gradient descent.
+
+    :param X: a R x T array
+    :param RX: instead of X, the representation to generate from
+    :param J: number of octaves
+    :param Q1: number of scales per octave on first wavelet layer
+    :param Q2: number of scales per octave on second wavelet layer
+    :param wav_type: wavelet type
+    :param wav_norm: wavelet normalization i.e. l1, l2
+    :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
+    :param moments: moments to compute on scattering, ex: None, 'marginal', 'cov', 'covstat'
+    :param qs: if moments == 'marginal' the exponents of the marginal moments
+    :param nchunks: nb of chunks, increase it to reduce memory usage
+    :param it: maximum number of gradient descent iteration
+    :param tol_optim: error below which gradient descent stops
+    :param generated_dir: the directory in which the generated dir will be located
+    :param exp_name: experience name
+    :param cuda: does calculation on gpu
+    :param gpus: a list of gpus to use
+    :param num_workers: number of generation workers
+
+    :return: a DescribedTensor result
     """
     if len(X.shape) == 1:  # assumes that X is of shape (T, )
         X = X[None, None, :]
@@ -376,11 +393,11 @@ def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, r_max=2, wav_type='battle_lema
         generated_dir = Path(__file__).parents[0] / 'cached_dir'
 
     # use a GenDataLoader to cache trajectories
-    dtld = GenDataLoader(exp_name or 'scattering_covariance', generated_dir, num_workers)
+    dtld = GenDataLoader(exp_name or 'gen_scat_cov', generated_dir, num_workers)
 
     # MODEL params
     model_params = {
-        'B': 1, 'N': N, 'T': T, 'J': J, 'Q1': Q1, 'Q2': Q2, 'r_max': r_max,
+        'B': 1, 'N': N, 'T': T, 'J': J, 'Q1': Q1, 'Q2': Q2, 'r_max': 2,
         'wav_type': wav_type,  # 'battle_lemarie' 'morlet' 'shannon'
         'high_freq': high_freq,  # 0.323645 or 0.425,
         'wav_norm': wav_norm,
@@ -406,7 +423,7 @@ def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, r_max=2, wav_type='battle_lema
     }
 
     # multi-processed generation
-    X_gen = dtld.load(B=S, X=X, RX=RX, model_params=model_params, optim_params=optim_params).X[:, 0, 0, :]
+    X_gen = dtld.load(B=S, X=X, RX=RX, model_params=model_params, optim_params=optim_params).X[:, 0, :]
 
     return X_gen
 
@@ -509,6 +526,8 @@ def plot_marginal_moments(RXs, estim_bar=False,
         has_power_spectrum = 2.0 in RX.descri.q.values
         has_sparsity = 1.0 in RX.descri.q.values
 
+        # averaging on the logs may have strange behaviors because of the strict convexity of the log
+        # if you prefer to look at the log of the mean, then to a .mean_batch() on the representation before ploting it
         if has_power_spectrum:
             logWX2_n = get_data(RX, 2.0)
             logWX2_err = get_variance(logWX2_n) ** 0.5
@@ -521,7 +540,7 @@ def plot_marginal_moments(RXs, estim_bar=False,
 
             if has_sparsity:
                 logWX1_n = get_data(RX, 1.0)
-                logWXs_n = 2 * logWX1_n - logWX2_n
+                logWXs_n = 2 * logWX1_n - logWX2_n.mean(0, keepdims=True)
                 logWXs_err = get_variance(logWXs_n) ** 0.5
                 logWXs = logWXs_n.mean(0)
                 plot_exponent(js, 1, axes[1], lb, COLORS[i_lb], 2.0 ** logWXs, np.log(2) * logWXs_err * 2.0 ** logWXs)
@@ -569,7 +588,7 @@ def plot_phase_envelope_spectrum(RXs, estim_bar=False, self_simi_bar=False, thet
 
         B = RX.y.shape[0]
 
-        sigma = cplx.real(RX.select(r=1, q=2, low=False)[:, :, 0, :]).unsqueeze(-1)
+        sigma = cplx.real(RX.select(r=1, q=2, low=False)[:, :, 0, :]).unsqueeze(-1).mean(0, keepdim=True)
 
         for a in range(1, J):
             if model_type == 'covstat':
@@ -708,7 +727,7 @@ def plot_scattering_spectrum(RXs, estim_bar=False, self_simi_bar=False, bootstra
 
         B = RX.y.shape[0]
 
-        sigma = cplx.real(RX.select(r=1, q=2, low=False)[:, :, 0, :]).unsqueeze(-1)  # N x J x 1
+        sigma = cplx.real(RX.select(r=1, q=2, low=False)[:, :, 0, :]).unsqueeze(-1).mean(0, keepdim=True)
 
         for (a, b) in product(range(J - 1), range(-J + 1, 0)):
             if a - b >= J:

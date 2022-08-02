@@ -116,7 +116,7 @@ class SkipConnection(SubModuleChunk):
         """ Return description that can be computed on input_descri. """
         def add(nt, key, value):
             d = {key: value, **nt._asdict()}
-            return namedtuple('Description', d)(**d)
+            return namedtuple('Descri', d)(**d)
 
         out_descri = self.sub_module.external_surjection_aux(input_descri)
 

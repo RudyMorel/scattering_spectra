@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from packaging import version
 
+from global_const import Tensor
 import utils.complex_utils as cplx
 from utils import multid_where_np
 from scattering_network.filter_bank import init_band_pass, init_low_pass
@@ -225,7 +226,8 @@ class SpectrumNormalization(SubModuleChunk):
         if not on_the_fly and sigma is None:
             raise ValueError("SpectrumNormalization requires a power-spectrum to use as normalization.")
         self.on_the_fly = on_the_fly
-        self.sigma = sigma
+        self.sigma_descri = sigma.descri
+        self.register_buffer('sigma', cplx.real(sigma.y).pow(0.5).unsqueeze(-1))
 
         # params
         self.masks = []
@@ -238,24 +240,30 @@ class SpectrumNormalization(SubModuleChunk):
         """ Return rows that can be computed on output_descri_row. """
         return []
 
+    def init_one_chunk(self, input: DescribedTensor, output_descri: Description, i_chunk: int) -> None:
+        """ Init the parameters of the model required to compute output_descri from input. """
+        if self.on_the_fly:
+            return
+
+        channel_scale = self.sigma_descri.to_array(['n1', 'sc'])
+
+        # mask q = 1: E[SX]
+        mask = multid_where_np(output_descri.to_array(['n1', 'sc']), channel_scale)
+
+        self.masks.append(mask)
+
     def set_sigma(self, sigma: torch.tensor, i_chunk: int) -> None:
         self.register_buffer(f'sigma_{i_chunk}', sigma)
-
-    def clear_params(self) -> None:
-        self.masks = []
 
     def forward_chunk(self, x: torch.tensor, i_chunk: int):
         """ Performs normalization x * psi_lam -> x * psi_lam / sigma_j. """
         descri = self.descri[i_chunk]
-        # mask = self.masks[i_chunk]
+        mask = self.masks[i_chunk]
 
         if self.on_the_fly:
             sigma = cplx.modulus(x).pow(2.0).mean(-1).pow(0.5).unsqueeze(-1).unsqueeze(-1)
         else:
-            if f'sigma_{i_chunk}' not in self.state_dict().keys():
-                sigma = cplx.modulus(x).pow(2.0).mean(-1).pow(0.5).unsqueeze(-1).unsqueeze(-1)
-                self.set_sigma(sigma, i_chunk)
-            sigma = self.state_dict()[f'sigma_{i_chunk}']
+            sigma = self.sigma[:, mask, :, :]
 
         y = x / sigma
 

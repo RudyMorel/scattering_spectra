@@ -86,7 +86,7 @@ class Description(pd.DataFrame):
         return Description(data=df_merged)
 
     def tile(self, col_name: List[str], values: Iterable) -> Description:
-        """ Given description omega, return the union {n} x omega for n in values. """
+        """ Given Description omega, return the union {n} x omega for n in values. """
         if self.size() == 0:
             raise ValueError("Should tile non zero idx info.")
         dfs = []
