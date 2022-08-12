@@ -92,10 +92,11 @@ class Cov(SubModuleChunk):
 
         # E[SX]
         if 'm00' in self.m_types and low:
-            output_descri_l.append((n1, -1, 1, max(1, r-1), -1, sc, -1, *js, *(-1,)*len(js), a, -1, low, r==1, 'm00'))
+            output_descri_l.append((n1, n1, 1, max(1, r-1), -1, sc, -1, *js, *(-1,)*len(js), a, -1, low, r==1, 'm00'))
 
         # E[SX SX^*]
         for scp in self.sc_idxer.get_all_idx():
+            # scale interactions
             path = self.sc_idxer.idx_to_path(sc)
             path_p = self.sc_idxer.idx_to_path(scp)
             rp = len(path_p)
@@ -107,7 +108,12 @@ class Cov(SubModuleChunk):
             if path[-1] != path_p[-1] or f'm{rl-1}{rr-1}' not in self.m_types:
                 continue
 
-            output_descri_l.append((n1, n1, 2, rl, rr, scl, scr, *jl, *jr, a, a, low or scl == scr, low, f'm{rl-1}{rr-1}'))
+            # channel interactions
+            for n1p in range(n1, self.N):
+                if (rr == rl == 1) and n1p < n1:
+                    continue
+                out_descri = (n1, n1p, 2, rl, rr, scl, scr, *jl, *jr, a, a, low or scl == scr, low, f'm{rl-1}{rr-1}')
+                output_descri_l.append(out_descri)
 
         return [namedtuple('Description', out_columns)(*row) for row in output_descri_l]
 
