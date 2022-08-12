@@ -152,10 +152,11 @@ class DescribedTensor:
             d[val].append(i)
         return torch.stack([out_non_pivot.y[:, val, ...] for val in d.values()])
 
-    def reduce(self, mask: Optional[np.ndarray[bool]] = None, **kwargs) -> DescribedTensor:
+    def reduce(self, mask: Optional[np.ndarray[bool]] = None, b: Optional[int] = None, **kwargs) -> DescribedTensor:
         """ Return a subtensor along with its description. """
         mask = self.descri.where(**kwargs) if mask is None else mask
-        return DescribedTensor(self.x, self.y[:, mask, ...], self.descri.reduce(mask))
+        reduced_b = self.y if b is None else self.y[b:b+1, ...]
+        return DescribedTensor(self.x, reduced_b[:, mask, ...], self.descri.reduce(mask))
 
     def apply(self, h: Callable[[torch.Tensor], torch.Tensor]) -> DescribedTensor:
         """ Apply an operator h: y -> y. """

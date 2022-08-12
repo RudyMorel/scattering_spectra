@@ -80,7 +80,7 @@ def load_data(process_name, B, T, cache_dir=None, **data_param):
 
 def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
                moments, m_types, qs, sigma,
-               chunk_method, nchunks):
+               nchunks):
     """ Initialize a scattering covariance model.
 
     :param N: number of in_data channel
@@ -94,7 +94,6 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     :param moments: moments to compute on scattering, ex: None, 'marginal', 'cov', 'covstat'
     :param m_types: the type of moments to compute i.e. m00, m10, m11
     :param qs: if moments == 'marginal' the exponents of the marginal moments
-    :param chunk_method: the method to optimize the coefficient graph i.e. quotient_n, graph_optim
     :param nchunks: the number of chunks
 
     :return: a torch module
@@ -121,7 +120,7 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     if moments == 'covstat':
         module_list.append(CovStat(J * Q1, m_types))
 
-    model = ModuleChunk(module_list, chunk_method, B, N, nchunks)
+    model = ModuleChunk(module_list, B, N, nchunks)
     model.init_chunks()
 
     return model
@@ -132,7 +131,7 @@ def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm):
     marginal_model = init_model(B=B, N=1, T=T, J=J, Q1=Q1, Q2=Q2, r_max=1,
                                 wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
                                 moments='marginal', m_types=None, qs=[2.0], sigma=None,
-                                chunk_method='quotient_n', nchunks=1)
+                                nchunks=1)
     sigma = marginal_model(X).mean_batch()
 
     return sigma
@@ -141,7 +140,7 @@ def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm):
 def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
             moments='cov', m_types=None, nchunks=1, cuda=False):
     """ Compute sigma^2(j).
-    :param X: a R x T array
+    :param X: an array of shape (T, ) or (B, T) or (B, N, T)
     :param J: number of octaves
     :param Q1: number of scales per octave on first wavelet layer
     :param Q2: number of scales per octave on second wavelet layer
@@ -155,8 +154,13 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
 
     :return: a DescribedTensor result
     """
-    B, T = X.shape
-    X = cplx.from_np(X).unsqueeze(1)
+    if len(X.shape) == 1:  # assumes that X is of shape (T, )
+        X = X[None, None, :]
+    elif len(X.shape) == 2:  # assumes that X is of shape (B, T)
+        X = X[:, None, :]
+
+    B, N, T = X.shape
+    X = cplx.from_np(X)
 
     if J is None:
         J = int(np.log2(T)) - 3
@@ -165,10 +169,10 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
     sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm) if moments == 'covstat' else None
 
     # initialize model
-    model = init_model(B=B, N=1, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type=wav_type, high_freq=high_freq,
+    model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type=wav_type, high_freq=high_freq,
                        wav_norm=wav_norm, moments=moments,
                        m_types=m_types or ['m00', 'm10', 'm11'], qs=None, sigma=sigma,
-                       chunk_method='quotient_n', nchunks=nchunks)
+                       nchunks=nchunks)
 
     # compute
     if cuda:
@@ -198,9 +202,9 @@ class GenDataLoader(ProcessDataLoader):
             (model_params[key] for key in ['N', 'T', 'J', 'Q1', 'Q2', 'r_max', 'wav_type', 'm_types', 'moments'])
         path_str = f"{self.model_name}_{wav_type}_B{B_target}_N{N}_T{T}_J{J}_Q1_{Q1}_Q2_{Q2}_rmax{r_max}_mo_{moments}" \
                    + f"{''.join(mtype[0] for mtype in m_types)}" \
-                   + f"_tol{str(int(np.log10(kwargs['optim_params']['tol_optim']))).replace('-', '')}" \
+                   + f"_tol{kwargs['optim_params']['tol_optim']:.2e}" \
                    + f"_it{kwargs['optim_params']['it']}"
-        return self.dir_name / path_str
+        return self.dir_name / path_str.replace('.', '_').replace('-', '_')
 
     def generate_trajectory(self, X, RX, model_params, optim_params, gpu, dirpath):
         """ Performs cached generation. """
@@ -224,8 +228,8 @@ class GenDataLoader(ProcessDataLoader):
             print("Preparing target representation")
             X_torch = cplx.from_np(X)
             model_avg = init_model(
-                B=X.shape[0], chunk_method='quotient_n', nchunks=X.shape[0],
-                **{key: value for (key, value) in model_params.items() if key not in ['B', 'chunk_method', 'nchunks']}
+                B=X.shape[0], nchunks=X.shape[0],
+                **{key: value for (key, value) in model_params.items() if key not in ['B', 'nchunks']}
             )
             if gpu is not None:
                 X_torch = X_torch.cuda()
@@ -324,7 +328,7 @@ def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav
     """ Generate new realizations of X from a scattering covariance model.
     We first compute the scattering covariance representation of X and then sample it using gradient descent.
 
-    :param X: a R x T array
+    :param X: an array of shape (T, ) or (B, T) or (B, N, T)
     :param RX: instead of X, the representation to generate from
     :param J: number of octaves
     :param Q1: number of scales per octave on first wavelet layer
@@ -372,7 +376,6 @@ def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav
         'wav_norm': wav_norm,
         'moments': moments,
         'm_types': mtypes, 'qs': qs, 'sigma': None,
-        'chunk_method': 'quotient_n',
         'nchunks': nchunks,
     }
 
@@ -824,8 +827,8 @@ def plot_scattering_spectrum(RXs, estim_bar=False, self_simi_bar=False, bootstra
             legobj.set_linewidth(5.0)
 
 
-def plot_dashboard(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True, theta_threshold=0.1,
-                   labels=None, linewidth=3.0, fontsize=20, ylim_phase=0.09, ylim_modulus=2.0, figsize=None):
+def plot_dashboard(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True, theta_threshold=None,
+                   labels=None, linewidth=3.0, fontsize=20, ylim_phase=0.09, ylim_modulus=2.0, figsize=None, axes=None):
     """ Plot the scattering covariance dashboard for multi-scale processes composed of:
         - (wavelet power spectrum) sigma^2(j)
         - (sparsity factors) s^2(j)
@@ -843,19 +846,33 @@ def plot_dashboard(RXs, estim_bar=False, self_simi_bar=False, bootstrap=True, th
     :param ylim_phase: graph ylim for the phase
     :param ylim_modulus: graph ylim for the modulus
     :param figsize: figure size
+    :param axes: custom array of axes, should be of shape (2, 2 + nb of representation to plot)
     :return:
     """
+    if theta_threshold is None:
+        theta_threshold = [0.005, 0.1]
     if isinstance(RXs, DescribedTensor):
         RXs = [RXs]
-    fig, axes = plt.subplots(2, 2 + len(RXs), figsize=figsize or (15 + 4 * (len(RXs) - 1), 10))
+    for RX in RXs:
+        if 'n1p' in RX.descri.columns:
+            ns = RX.descri.to_array(['n1', 'n1p'])
+        else:
+            ns = RX.descri.to_array(['n1'])
+        ns_unique = set([tuple(n) for n in ns])
+        if len(ns_unique) != 1:
+            raise ValueError("Plotting functions do not support multi-variate representation other than "
+                             "univariate or single pair.")
+
+    if axes is None:
+        _, axes = plt.subplots(2, 2 + len(RXs), figsize=figsize or (10 + 5 * (len(RXs) - 1), 10))
 
     # marginal moments sigma^2 and s^2
     plot_marginal_moments(RXs, estim_bar, axes[:, 0], labels, linewidth, fontsize)
 
     # phase-envelope cross-spectrum
-    plot_phase_envelope_spectrum(RXs, estim_bar, self_simi_bar, theta_threshold / 50, axes[:, 1], labels, fontsize, False, ylim_phase)
+    plot_phase_envelope_spectrum(RXs, estim_bar, self_simi_bar, theta_threshold[0], axes[:, 1], labels, fontsize, False, ylim_phase)
 
     # scattering cross spectrum
-    plot_scattering_spectrum(RXs, estim_bar, self_simi_bar, bootstrap, theta_threshold, axes[:, 2:], labels, fontsize, ylim_modulus)
+    plot_scattering_spectrum(RXs, estim_bar, self_simi_bar, bootstrap, theta_threshold[1], axes[:, 2:], labels, fontsize, ylim_modulus)
 
     plt.tight_layout()

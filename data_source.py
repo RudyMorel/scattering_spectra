@@ -100,7 +100,7 @@ class ProcessDataLoader:
                 return f"_{key[:2]}_{int(value)}"
             else:
                 return ''
-        fname = self.model_name + format_path(None, kwargs)
+        fname = (self.model_name + format_path(None, kwargs)).replace('.', '_').replace('-', '_')
         return self.dir_name / fname
 
     def generate_trajectory(self, **kwargs) -> np.ndarray:

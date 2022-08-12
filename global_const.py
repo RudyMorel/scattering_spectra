@@ -1,10 +1,9 @@
-import os
 import torch
 
 from pathlib import Path
 
 # PATHS
-CODE_PATH = Path(os.getcwd())
+CODE_PATH = Path(__file__)
 if CODE_PATH.name != 'Library':
     CODE_PATH = CODE_PATH.parents[0]
 
