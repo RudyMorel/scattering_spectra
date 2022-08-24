@@ -7,7 +7,7 @@ import shutil
 import numpy as np
 
 from stochastic_classical_models import fbm, mrw, skewed_mrw, poisson_mu
-from global_const import *
+from frontend.global_const import *
 
 
 """ TIME SERIES DATA classes
@@ -67,7 +67,7 @@ class TimeSeriesDir(TimeSeriesBase):
 
 
 """
-LOADER classes create and access cached data 
+LOADER classes create and access cached data
 """
 
 
