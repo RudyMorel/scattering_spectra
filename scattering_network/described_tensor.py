@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import pandas as pd
 
-from utils import get_permutation
+from facvae.scattering_covariance.utils import get_permutation
 
 """ 
 Tensor shapes:

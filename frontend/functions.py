@@ -8,16 +8,16 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-import utils.complex_utils as cplx
-from utils import to_numpy
-from frontend.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
-from scattering_network.scale_indexer import ScaleIndexer
-from scattering_network.time_layers import Wavelet, SpectrumNormalization
-from scattering_network.moments import Marginal, Cov, CovStat
-from scattering_network.module_chunk import ModuleChunk, SkipConnection
-from scattering_network.described_tensor import DescribedTensor
-from scattering_network.loss import MSELossScat
-from scattering_network.solver import Solver, CheckConvCriterion, SmallEnoughException
+import facvae.scattering_covariance.utils.complex_utils as cplx
+from facvae.scattering_covariance.utils import to_numpy
+from facvae.scattering_covariance.frontend.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
+from facvae.scattering_covariance.scattering_network.scale_indexer import ScaleIndexer
+from facvae.scattering_covariance.scattering_network.time_layers import Wavelet, SpectrumNormalization
+from facvae.scattering_covariance.scattering_network.moments import Marginal, Cov, CovStat
+from facvae.scattering_covariance.scattering_network.module_chunk import ModuleChunk, SkipConnection
+from facvae.scattering_covariance.scattering_network.described_tensor import DescribedTensor
+from facvae.scattering_covariance.scattering_network.loss import MSELossScat
+from facvae.scattering_covariance.scattering_network.solver import Solver, CheckConvCriterion, SmallEnoughException
 
 """ Notations
 

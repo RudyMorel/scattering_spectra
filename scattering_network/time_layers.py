@@ -6,12 +6,11 @@ import torch
 import torch.nn as nn
 from packaging import version
 
-from frontend.global_const import Tensor
-import utils.complex_utils as cplx
-from utils import multid_where_np
-from scattering_network.filter_bank import init_band_pass, init_low_pass
-from scattering_network.module_chunk import SubModuleChunk
-from scattering_network.described_tensor import Description, DescribedTensor
+import facvae.scattering_covariance.utils.complex_utils as cplx
+from facvae.scattering_covariance.utils import multid_where_np
+from facvae.scattering_covariance.scattering_network.filter_bank import init_band_pass, init_low_pass
+from facvae.scattering_covariance.scattering_network.module_chunk import SubModuleChunk
+from facvae.scattering_covariance.scattering_network.described_tensor import Description, DescribedTensor
 
 
 class FFT:

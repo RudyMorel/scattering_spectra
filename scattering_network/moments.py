@@ -4,11 +4,11 @@ from itertools import product
 from collections import namedtuple
 import torch
 
-from scattering_network.module_chunk import SubModuleChunk
-from scattering_network.scale_indexer import ScaleIndexer
-from scattering_network.described_tensor import Description, DescribedTensor
-from utils import multid_where_np, multid_where
-import utils.complex_utils as cplx
+from facvae.scattering_covariance.scattering_network.module_chunk import SubModuleChunk
+from facvae.scattering_covariance.scattering_network.scale_indexer import ScaleIndexer
+from facvae.scattering_covariance.scattering_network.described_tensor import Description, DescribedTensor
+from facvae.scattering_covariance.utils import multid_where_np, multid_where
+import facvae.scattering_covariance.utils.complex_utils as cplx
 
 
 class Marginal(SubModuleChunk):

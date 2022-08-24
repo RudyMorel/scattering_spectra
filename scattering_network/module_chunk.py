@@ -5,9 +5,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-import utils.complex_utils as cplx
-from utils import transpose
-from scattering_network.described_tensor import Description, DescribedTensor
+import facvae.scattering_covariance.utils.complex_utils as cplx
+from facvae.scattering_covariance.utils import transpose
+from facvae.scattering_covariance.scattering_network.described_tensor import Description, DescribedTensor
 
 
 class SubModuleChunk(nn.Module):
