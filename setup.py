@@ -15,5 +15,5 @@ setuptools.setup(
     url='https://github.com/alisiahkoohi/scattering_covariance',
     license='MIT',
     install_requires=reqs,
-    packages=setuptools.find_packages(),
+    packages=setuptools.find_packages()
 )
