@@ -5,10 +5,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-import utils.complex_utils as cplx
-from utils import transpose
-from scattering_network.described_tensor import Description, DescribedTensor
-
+import scatcov.utils.complex_utils as cplx
+from scatcov.utils import transpose
+from scatcov.scattering_network.described_tensor import Description, DescribedTensor
 
 class SubModuleChunk(nn.Module):
     """ A module that can be chunked automatically. """

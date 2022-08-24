@@ -8,10 +8,10 @@ import torch.nn as nn
 from torch.nn.functional import relu
 from torch.autograd import Variable, grad
 
-import utils.complex_utils as cplx
-from scattering_network.module_chunk import ModuleChunk
-from scattering_network.described_tensor import DescribedTensor
-
+from scatcov.frontend.global_const import Tensor
+import scatcov.utils.complex_utils as cplx
+from scatcov.scattering_network.module_chunk import ModuleChunk
+from scatcov.scattering_network.described_tensor import DescribedTensor
 
 def compute_w_l2(weights, model, w_gap, nchunks):
     # normalize by the number of coeffs at each order
