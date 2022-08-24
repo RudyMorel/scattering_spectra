@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import utils.complex_utils as cplx
 from utils import to_numpy
-from scripts.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
+from frontend.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
 from scattering_network.scale_indexer import ScaleIndexer
 from scattering_network.time_layers import Wavelet, SpectrumNormalization
 from scattering_network.moments import Marginal, Cov, CovStat

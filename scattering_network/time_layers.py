@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from packaging import version
 
-from scripts.global_const import Tensor
+from frontend.global_const import Tensor
 import utils.complex_utils as cplx
 from utils import multid_where_np
 from scattering_network.filter_bank import init_band_pass, init_low_pass

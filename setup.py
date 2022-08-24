@@ -7,7 +7,7 @@ reqs = []
 setuptools.setup(
     name='scatcov',
     version='1.0',
-    author='Rudy Morel and Ali Siahkoohi',
+    author='Rudy Morel',
     author_email='rudy.morel@ens.fr',
     description='Analysis and generation of time-series with Scattering Covariance',
     long_description=long_description,

@@ -8,7 +8,7 @@ import torch.nn as nn
 from torch.nn.functional import relu
 from torch.autograd import Variable, grad
 
-from scripts.global_const import Tensor
+from frontend.global_const import Tensor
 import utils.complex_utils as cplx
 from scattering_network.module_chunk import ModuleChunk
 from scattering_network.described_tensor import DescribedTensor
