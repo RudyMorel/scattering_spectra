@@ -6,9 +6,9 @@ import numpy as np
 import torch
 import pandas as pd
 
-from utils import get_permutation
+from scatcov.utils import get_permutation
 
-""" 
+"""
 Tensor shapes:
 - x: input, of shape  (B, N, T)
 - y: output, of shape (B, K, T, 2) where K is the number of coefficients

@@ -7,12 +7,7 @@ from multiprocessing import Pool
 import shutil
 import numpy as np
 
-<<<<<<<< HEAD:data_source.py
-from stochastic_classical_models import fbm, mrw, skewed_mrw, poisson_mu
-========
 from scatcov.stochastic_classical_models import fbm, mrw, skewed_mrw, poisson_mu
-from scatcov.frontend.global_const import *
->>>>>>>> 1165d3a (settig up package):scatcov/frontend/data_source.py
 
 
 """ TIME SERIES DATA classes

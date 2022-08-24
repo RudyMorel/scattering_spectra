@@ -8,18 +8,6 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-<<<<<<<< HEAD:frontend.py
-import utils.complex_utils as cplx
-from utils import to_numpy
-from data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
-from scattering_network.scale_indexer import ScaleIndexer
-from scattering_network.time_layers import Wavelet, SpectrumNormalization
-from scattering_network.moments import Marginal, Cov, CovStat
-from scattering_network.module_chunk import ModuleChunk, SkipConnection
-from scattering_network.described_tensor import DescribedTensor
-from scattering_network.loss import MSELossScat
-from scattering_network.solver import Solver, CheckConvCriterion, SmallEnoughException
-========
 import scatcov.utils.complex_utils as cplx
 from scatcov.utils import to_numpy
 from scatcov.frontend.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
@@ -30,7 +18,6 @@ from scatcov.scattering_network.module_chunk import ModuleChunk, SkipConnection
 from scatcov.scattering_network.described_tensor import DescribedTensor
 from scatcov.scattering_network.loss import MSELossScat
 from scatcov.scattering_network.solver import Solver, CheckConvCriterion, SmallEnoughException
->>>>>>>> 1165d3a (settig up package):scatcov/frontend/functions.py
 
 """ Notations
 

@@ -2,19 +2,30 @@
 
 This repository implements the *Scattering Covariance* introduced in [1].
 
-It provides an interpretable low-dimensional representation of multi-scale time-series. 
+It provides an interpretable low-dimensional representation of multi-scale time-series.
 
-The main application of *Scattering Covariance* is time-series **analysis** and time-series **generation**. 
+The main application of *Scattering Covariance* is time-series **analysis** and time-series **generation**.
 
-Among other applications are the assessment of **self-similarity** in the data and the detection of **non-Gaussianity**. 
+Among other applications are the assessment of **self-similarity** in the data and the detection of **non-Gaussianity**.
+
+## Installation
+
+Run the commands below to install the required packages.
+
+```bash
+pip install git+https://github.com/RudyMorel/scattering_covariance
+```
 
 ## Analysis
 
 The *Scattering Covariance* provides a dashboard used to analyze multi-scale time-series.
 
-Standard model of time series can be loaded using **load_data** from `frontend.py`. The function **analyze** computes *Scattering Covariance*, it can be visualized using the function **plot_dashboard**. 
+Standard model of time series can be loaded using **load_data** from `frontend.py`. The function **analyze** computes *Scattering Covariance*, it can be visualized using the function **plot_dashboard**.
 
 ```python
+from scatcov.frontend.functions import (analyze, generate, load_data,
+                                        plot_dashboard)
+
 # DATA
 X = load_data(process_name='fbm', B=128, T=8192, H=0.5)  # a B x T array
 
@@ -49,15 +60,15 @@ plot_dashboard([RX1, RX2, RX3], labels=['fbm', 'mrw', 'smrw'])
 
 A model of the process $X$ can be defined from the *Scattering Covariance*. Such model can be sampled using gradient descent [1].
 
-Function **generate** from `frontend.py` takes observed data $X$ as input and return realizations of our model of $X$. 
+Function **generate** from `frontend.py` takes observed data $X$ as input and return realizations of our model of $X$.
 
 ```python
 # DATA
-X = load_data(process_name='smrw', B=1, T=4096, lam=0.1, 
-              gamma=1/4096/256, K=0.03, alpha=0.23, beta=0.23)  # a B x T array
+X = load_data(process_name='smrw', B=1, T=4096, lam=0.1,
+              gamma=1/4096/256, K=0.03, alpha=0.23, beta=0.23)
 
 # GENERATION
-X_gen = generate(X, J=9, S=1, it=10000, cuda=True, tol_optim=5e-4)  # a S x T array
+X_gen = generate(X, J=9, S=1, it=10000, cuda=True, tol_optim=5e-4)
 
 # VISUALIZATION
 fig, axes = plt.subplots(2,1, figsize=(10,5))

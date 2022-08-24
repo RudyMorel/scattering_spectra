@@ -4,8 +4,8 @@ import numpy as np
 import torch.nn as nn
 import torch
 
-import utils.complex_utils as cplx
-from scattering_network.described_tensor import DescribedTensor
+import scatcov.utils.complex_utils as cplx
+from scatcov.scattering_network.described_tensor import DescribedTensor
 
 
 class MSELossScat(nn.Module):
