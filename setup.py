@@ -12,7 +12,7 @@ setuptools.setup(
     description='Analysis and generation of time-series with Scattering Covariance',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/alisiahkoohi/scattering_covariance',
+    url='https://github.com/RudyMorel/scattering_covariance',
     license='MIT',
     install_requires=reqs,
     packages=setuptools.find_packages()
