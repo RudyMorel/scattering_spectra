@@ -8,10 +8,10 @@ import torch.nn as nn
 from torch.nn.functional import relu
 from torch.autograd import Variable, grad
 
-from facvae.scattering_covariance.frontend.global_const import Tensor
-import facvae.scattering_covariance.utils.complex_utils as cplx
-from facvae.scattering_covariance.scattering_network.module_chunk import ModuleChunk
-from facvae.scattering_covariance.scattering_network.described_tensor import DescribedTensor
+from frontend.global_const import Tensor
+import utils.complex_utils as cplx
+from scattering_network.module_chunk import ModuleChunk
+from scattering_network.described_tensor import DescribedTensor
 
 
 def compute_w_l2(weights, model, w_gap, nchunks):

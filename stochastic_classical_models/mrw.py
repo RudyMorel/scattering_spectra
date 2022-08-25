@@ -1,6 +1,7 @@
 import numpy as np
-from facvae.scattering_covariance.stochastic_classical_models.gaussian import gaussian_cme, fbm
 from numpy.fft import fft, ifft
+
+from stochastic_classical_models.gaussian import gaussian_cme, fbm
 
 
 def gaussian_w(R, T, L, lam, dt=1):
