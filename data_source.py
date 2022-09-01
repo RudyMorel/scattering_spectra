@@ -1,5 +1,6 @@
 """ Data classes and functions. """
 from typing import *
+from pathlib import Path
 from collections import OrderedDict
 from functools import partial
 from multiprocessing import Pool
@@ -7,7 +8,6 @@ import shutil
 import numpy as np
 
 from stochastic_classical_models import fbm, mrw, skewed_mrw, poisson_mu
-from frontend.global_const import *
 
 
 """ TIME SERIES DATA classes

@@ -54,10 +54,10 @@ Function **generate** from `frontend.py` takes observed data $X$ as input and re
 ```python
 # DATA
 X = load_data(process_name='smrw', B=1, T=4096, lam=0.1, 
-              gamma=1/4096/256, K=0.03, alpha=0.23, beta=0.23)
+              gamma=1/4096/256, K=0.03, alpha=0.23, beta=0.23)  # a B x T array
 
 # GENERATION
-X_gen = generate(X, J=9, S=1, it=10000, cuda=True, tol_optim=5e-4)
+X_gen = generate(X, J=9, S=1, it=10000, cuda=True, tol_optim=5e-4)  # a S x T array
 
 # VISUALIZATION
 fig, axes = plt.subplots(2,1, figsize=(10,5))

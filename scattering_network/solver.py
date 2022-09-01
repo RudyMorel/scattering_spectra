@@ -8,7 +8,6 @@ import torch.nn as nn
 from torch.nn.functional import relu
 from torch.autograd import Variable, grad
 
-from frontend.global_const import Tensor
 import utils.complex_utils as cplx
 from scattering_network.module_chunk import ModuleChunk
 from scattering_network.described_tensor import DescribedTensor
@@ -85,7 +84,7 @@ class Solver(nn.Module):
 
     def format(self, x: np.ndarray, requires_grad=True):
         """ Transforms x into a compatible format for the embedding. """
-        x = cplx.from_np(x.reshape(1, self.N, -1), tensor=Tensor)
+        x = cplx.from_np(x.reshape(1, self.N, -1), tensor=torch.DoubleTensor)
         if self.is_cuda:
             x = x.cuda()
         x = Variable(x, requires_grad=requires_grad)

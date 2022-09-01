@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import utils.complex_utils as cplx
 from utils import to_numpy
-from frontend.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
+from data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
 from scattering_network.scale_indexer import ScaleIndexer
 from scattering_network.time_layers import Wavelet, SpectrumNormalization
 from scattering_network.moments import Marginal, Cov, CovStat
@@ -138,8 +138,9 @@ def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm):
 
 
 def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-            moments='cov', m_types=None, nchunks=1, cuda=False):
-    """ Compute sigma^2(j).
+            moments='cov', normalize=False, m_types=None, nchunks=1, cuda=False):
+    """ Compute scattering covariance.
+
     :param X: an array of shape (T, ) or (B, T) or (B, N, T)
     :param J: number of octaves
     :param Q1: number of scales per octave on first wavelet layer
@@ -148,6 +149,7 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param moments: moments to compute on scattering, ex: None, 'marginal', 'cov', 'covstat'
+    :param normalize: wether to normalize scattring covariance by the power spectrum
     :param m_types: m00: sigma^2 and s^2, m10: cp, m11: cm
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param cuda: does calculation on gpu
@@ -166,7 +168,9 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
         J = int(np.log2(T)) - 3
 
     # covstat needs a spectrum normalization
-    sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm) if moments == 'covstat' else None
+    sigma = None
+    if normalize or moments == 'covstat':
+        sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm)
 
     # initialize model
     model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type=wav_type, high_freq=high_freq,
