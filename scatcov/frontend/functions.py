@@ -126,12 +126,15 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     return model
 
 
-def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm):
+def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda=False):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
     marginal_model = init_model(B=B, N=1, T=T, J=J, Q1=Q1, Q2=Q2, r_max=1,
                                 wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
                                 moments='marginal', m_types=None, qs=[2.0], sigma=None,
                                 nchunks=1)
+    if cuda:
+        X = X.cuda()
+        marginal_model = marginal_model.cuda()
     sigma = marginal_model(X).mean_batch()
 
     return sigma
@@ -170,7 +173,7 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
     # covstat needs a spectrum normalization
     sigma = None
     if normalize or moments == 'covstat':
-        sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm)
+        sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda=cuda)
 
     # initialize model
     model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type=wav_type, high_freq=high_freq,
