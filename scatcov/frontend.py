@@ -228,7 +228,7 @@ class GenDataLoader(ProcessDataLoader):
         sigma = compute_sigma(X_torch, model_params['B'], model_params['T'], model_params['J'],
                               model_params['Q1'], model_params['Q2'],
                               model_params['wav_type'], model_params['high_freq'], model_params['wav_norm'],
-                              model_params['cuda'])
+                              optim_params['cuda'])
         model_params['sigma'] = sigma
 
         # prepare target representation
