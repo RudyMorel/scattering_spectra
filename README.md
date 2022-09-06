@@ -23,8 +23,8 @@ The *Scattering Covariance* provides a dashboard used to analyze multi-scale tim
 Standard model of time series can be loaded using **load_data** from `frontend.py`. The function **analyze** computes *Scattering Covariance*, it can be visualized using the function **plot_dashboard**.
 
 ```python
-from scatcov.frontend.functions import (analyze, generate, load_data,
-                                        plot_dashboard)
+from scatcov.frontend import (analyze, generate, load_data,
+                              plot_dashboard)
 
 # DATA
 X = load_data(process_name='fbm', B=128, T=8192, H=0.5)  # a B x T array

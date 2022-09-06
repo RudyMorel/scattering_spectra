@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import scatcov.utils.complex_utils as cplx
 from scatcov.utils import to_numpy
-from scatcov.frontend.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
+from scatcov.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
 from scatcov.scattering_network.scale_indexer import ScaleIndexer
 from scatcov.scattering_network.time_layers import Wavelet, SpectrumNormalization
 from scatcov.scattering_network.moments import Marginal, Cov, CovStat
@@ -126,7 +126,7 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     return model
 
 
-def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda=False):
+def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
     marginal_model = init_model(B=B, N=1, T=T, J=J, Q1=Q1, Q2=Q2, r_max=1,
                                 wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
@@ -173,7 +173,7 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
     # covstat needs a spectrum normalization
     sigma = None
     if normalize or moments == 'covstat':
-        sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda=cuda)
+        sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda)
 
     # initialize model
     model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type=wav_type, high_freq=high_freq,
@@ -227,7 +227,8 @@ class GenDataLoader(ProcessDataLoader):
         # sigma = None
         sigma = compute_sigma(X_torch, model_params['B'], model_params['T'], model_params['J'],
                               model_params['Q1'], model_params['Q2'],
-                              model_params['wav_type'], model_params['high_freq'], model_params['wav_norm'])
+                              model_params['wav_type'], model_params['high_freq'], model_params['wav_norm'],
+                              model_params['cuda'])
         model_params['sigma'] = sigma
 
         # prepare target representation

@@ -9,6 +9,7 @@ import scatcov.utils.complex_utils as cplx
 from scatcov.utils import transpose
 from scatcov.scattering_network.described_tensor import Description, DescribedTensor
 
+
 class SubModuleChunk(nn.Module):
     """ A module that can be chunked automatically. """
     def __init__(self, init_with_input: bool = False):

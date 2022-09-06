@@ -12,6 +12,7 @@ import scatcov.utils.complex_utils as cplx
 from scatcov.scattering_network.module_chunk import ModuleChunk
 from scatcov.scattering_network.described_tensor import DescribedTensor
 
+
 def compute_w_l2(weights, model, w_gap, nchunks):
     # normalize by the number of coeffs at each order
     # weights = {m_type: 1 / (scat * nbs[m_type]) for m_type in R.moment_types}
