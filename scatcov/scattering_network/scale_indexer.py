@@ -17,8 +17,8 @@ import torch
 
 class ScaleIndexer:
     """ Implements the scale paths used in the scattering transform. """
-    def __init__(self, J: int, Q1: int, Q2: int, r_max: int):
-        self.J, self.Q1, self.Q2, self.r_max = J, Q1, Q2, r_max
+    def __init__(self, J: int, Qs: List[int], r_max: int):
+        self.J, self.Qs, self.r_max = J, Qs, r_max
 
         self.p_idx = self.compute_p_idx()  # list[order] array
         self.p_coding, self.p_decoding = self.construct_path_coding_dicts()
@@ -35,24 +35,27 @@ class ScaleIndexer:
         def compare(t1, t2): return (len(t1) == len(t2) and t1 < t2) or (len(t1) < len(t2))  # order on tuples
         assert sorted(paths, key=cmp_to_key(compare)) == [paths[i] for i in argsort]
 
-        for r in ([2] if self.r_max >= 2 else []):
-            # when p_idx[r] is collapsed we obtain p_idx[r-1] without low_pass
-            collapsed = np.unique(self.p_idx[r - 1][:, :-1], axis=0)
-            previous_order = self.p_idx[r - 2][~self.low_pass_mask[r-2], :]
-            assert np.all(collapsed == previous_order)
+        if all([Q == 1 for Q in self.Qs]):
+            for r in ([2] if self.r_max >= 2 else []):
+                # when p_idx[r] is collapsed we obtain p_idx[r-1] without low_pass
+                collapsed = np.unique(self.p_idx[r - 1][:, :-1], axis=0)
+                previous_order = self.p_idx[r - 2][~self.low_pass_mask[r-2], :]
+                assert np.all(collapsed == previous_order)
 
-    def JQ(self, r=1) -> int:
+    def JQ(self, r: int) -> int:
         """ Return the number of wavelet at a certain order. """
-        return self.J * {1: self.Q1, 2: self.Q2}[r]
+        return self.J * self.Qs[r-1]
 
-    def condition(self, path) -> bool:
+    def condition(self, path: List[int]) -> bool:
         """ Tells if path j1, j2 ... j{r-1} jr is admissible. """
-        return (len(path) <= self.r_max) and all(i < j for i, j in zip(path[:-1], path[1:]))
+        return (len(path) <= self.r_max) and \
+               all(i // self.Qs[order] < j // self.Qs[order+1] for order, (i, j) in enumerate(zip(path[:-1], path[1:])))
 
     def compute_p_idx(self) -> List[np.ndarray]:
         """ The tables j1, j2 ... j{r-1} jr for every order r. """
-        return [np.arange(self.JQ() + 1)[:, None]] + \
-               [np.array([path for path in product(*(range(self.JQ() + 1),) * r) if self.condition(path)])
+        return [np.arange(self.JQ(1) + 1)[:, None]] + \
+               [np.array([path for path in product(*[range(self.JQ(rm+1) + 1) for rm in range(r)])
+                          if self.condition(path)])
                 for r in range(2, self.r_max + 1)]
 
     def construct_path_coding_dicts(self) -> Tuple[Dict[Tuple, int], Dict[int, Tuple]]:
@@ -87,7 +90,7 @@ class ScaleIndexer:
 
     def is_low_pass(self, idx: int) -> bool:
         """ Determines if the path indexed by idx is ending with a low-pass. """
-        return self.idx_to_path(idx)[-1] >= self.JQ()
+        return self.idx_to_path(idx)[-1] >= self.JQ(self.r(idx))
 
     def r(self, idx: int) -> int:
         """ The scattering order of the path indexed by idx. """
@@ -95,4 +98,5 @@ class ScaleIndexer:
 
     def compute_low_pass_mask(self) -> List[torch.Tensor]:
         """ Compute the low pass mask telling at each order which are the paths ending with a low pass filter. """
-        return [torch.LongTensor(paths[:, -1]) >= self.JQ() for paths in self.p_idx[:3]]
+        return [torch.LongTensor(paths[:, -1]) == self.JQ(order+1)
+                for order, paths in enumerate(self.p_idx[:3])]

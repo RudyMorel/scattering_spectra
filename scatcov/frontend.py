@@ -78,7 +78,7 @@ def load_data(process_name, B, T, cache_dir=None, **data_param):
 # ANALYSIS
 ##################
 
-def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
+def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_norm,
                moments, m_types, qs, sigma,
                nchunks):
     """ Initialize a scattering covariance model.
@@ -88,7 +88,8 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     :param Q1: wavelets per octave first layer
     :param Q2: wavelets per octave second layer
     :param r_max: number convolution layers
-    :param wav_type: wavelet type
+    :param wav_type1: wavelet type for the first layer
+    :param wav_type2: wavelet type for the second layer
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param moments: moments to compute on scattering, ex: None, 'marginal', 'cov', 'covstat'
@@ -101,15 +102,15 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
     module_list = []
 
     # scattering network
-    sc_idxer = ScaleIndexer(J, Q1, Q2, r_max)
-    W1 = Wavelet(T, J, Q1, wav_type, high_freq, wav_norm, 1, sc_idxer)
+    sc_idxer = ScaleIndexer(J, [Q1, Q2], r_max)
+    W1 = Wavelet(T, J, Q1, wav_type1, high_freq, wav_norm, 1, sc_idxer)
     module_list.append(W1)
 
     if moments == 'covstat' or sigma is not None:
         module_list.append(SpectrumNormalization(False, sigma))
 
     if r_max > 1:
-        W2 = Wavelet(T, J, Q2, wav_type, high_freq, wav_norm, 2, sc_idxer)
+        W2 = Wavelet(T, J, Q2, wav_type2, high_freq, wav_norm, 2, sc_idxer)
         module_list.append(SkipConnection(W2))
 
     # moments
@@ -129,7 +130,7 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type, high_freq, wav_norm,
 def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
     marginal_model = init_model(B=B, N=1, T=T, J=J, Q1=Q1, Q2=Q2, r_max=1,
-                                wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
+                                wav_type1=wav_type, wav_type2=wav_type, high_freq=high_freq, wav_norm=wav_norm,
                                 moments='marginal', m_types=None, qs=[2.0], sigma=None,
                                 nchunks=1)
     if cuda:
@@ -140,7 +141,8 @@ def compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
     return sigma
 
 
-def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
+def analyze(X, J=None, Q1=1, Q2=1,
+            wav_type1='battle_lemarie', wav_type2='battle_lemarie', wav_norm='l1', high_freq=0.425,
             moments='cov', normalize=False, m_types=None, nchunks=1, cuda=False):
     """ Compute scattering covariance.
 
@@ -148,7 +150,8 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
     :param J: number of octaves
     :param Q1: number of scales per octave on first wavelet layer
     :param Q2: number of scales per octave on second wavelet layer
-    :param wav_type: wavelet type
+    :param wav_type1: wavelet type for the first layer
+    :param wav_type2: wavelet type for the second layer
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param moments: moments to compute on scattering, ex: None, 'marginal', 'cov', 'covstat'
@@ -173,10 +176,11 @@ def analyze(X, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', hig
     # covstat needs a spectrum normalization
     sigma = None
     if normalize or moments == 'covstat':
-        sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda)
+        sigma = compute_sigma(X, B, T, J, Q1, Q2, wav_type1, high_freq, wav_norm, cuda)
 
     # initialize model
-    model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type=wav_type, high_freq=high_freq,
+    model = init_model(B=B, N=N, T=T, J=J,
+                       Q1=Q1, Q2=Q2, r_max=2, wav_type1=wav_type1, wav_type2=wav_type2, high_freq=high_freq,
                        wav_norm=wav_norm, moments=moments,
                        m_types=m_types or ['m00', 'm10', 'm11'], qs=None, sigma=sigma,
                        nchunks=nchunks)
@@ -206,7 +210,7 @@ class GenDataLoader(ProcessDataLoader):
         B_target = kwargs['X'].shape[0]
         model_params = kwargs['model_params']
         N, T, J, Q1, Q2, r_max, wav_type, m_types, moments = \
-            (model_params[key] for key in ['N', 'T', 'J', 'Q1', 'Q2', 'r_max', 'wav_type', 'm_types', 'moments'])
+            (model_params[key] for key in ['N', 'T', 'J', 'Q1', 'Q2', 'r_max', 'wav_type1', 'm_types', 'moments'])
         path_str = f"{self.model_name}_{wav_type}_B{B_target}_N{N}_T{T}_J{J}_Q1_{Q1}_Q2_{Q2}_rmax{r_max}_mo_{moments}" \
                    + f"{''.join(mtype[0] for mtype in m_types)}" \
                    + f"_tol{kwargs['optim_params']['tol_optim']:.2e}" \
@@ -227,7 +231,7 @@ class GenDataLoader(ProcessDataLoader):
         # sigma = None
         sigma = compute_sigma(X_torch, model_params['B'], model_params['T'], model_params['J'],
                               model_params['Q1'], model_params['Q2'],
-                              model_params['wav_type'], model_params['high_freq'], model_params['wav_norm'],
+                              model_params['wav_type1'], model_params['high_freq'], model_params['wav_norm'],
                               optim_params['cuda'])
         model_params['sigma'] = sigma
 
@@ -379,7 +383,7 @@ def generate(X, RX=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav
     # MODEL params
     model_params = {
         'B': 1, 'N': N, 'T': T, 'J': J, 'Q1': Q1, 'Q2': Q2, 'r_max': 2,
-        'wav_type': wav_type,  # 'battle_lemarie' 'morlet' 'shannon'
+        'wav_type1': wav_type, 'wav_type2': wav_type, # 'battle_lemarie' 'morlet' 'shannon'
         'high_freq': high_freq,  # 0.323645 or 0.425,
         'wav_norm': wav_norm,
         'moments': moments,

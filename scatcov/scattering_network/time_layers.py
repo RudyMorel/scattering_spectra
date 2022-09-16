@@ -9,6 +9,7 @@ from packaging import version
 import scatcov.utils.complex_utils as cplx
 from scatcov.utils import multid_where_np
 from scatcov.scattering_network.filter_bank import init_band_pass, init_low_pass
+from scatcov.scattering_network.scale_indexer import ScaleIndexer
 from scatcov.scattering_network.module_chunk import SubModuleChunk
 from scatcov.scattering_network.described_tensor import Description, DescribedTensor
 
@@ -139,7 +140,9 @@ class ReflectionPad(Pad1d):
 
 class Wavelet(SubModuleChunk):
     """ Wavelet convolutional operator. """
-    def __init__(self, T, J, Q, wav_type, high_freq, wav_norm, layer_r, sc_idxer):
+    def __init__(self, T: int, J: int, Q: int,
+                 wav_type: str, high_freq: float, wav_norm: str,
+                 layer_r: int, sc_idxer: ScaleIndexer):
         super(Wavelet, self).__init__()
         self.T, self.J, self.Q, self.layer_r = 2 * T, J, Q, layer_r
         self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
@@ -156,25 +159,29 @@ class Wavelet(SubModuleChunk):
 
     def external_surjection_aux(self, input_descri):
         """ Return description that can be computed on input_descri. """
-        n, r, sc, *js, a, low = input_descri
+        n, rm1, sc, *js, a, low = input_descri
         descri_l = []
         out_columns = ['n1', 'r', 'sc'] + [f'j{r}' for r in range(1, self.sc_idxer.r_max + 1)] + ['a', 'low']
 
         # from path j1, ..., j{r-1} associate all paths j1, ..., j{r-1}, jr
-        for jrp1 in range(0 if r == 0 else js[r-1] + 1, self.sc_idxer.JQ() + 1):
+        for jr in range(self.sc_idxer.JQ(rm1+1) + 1):
+            # ensure that the fourier support of |...* psi_jr-1| overlap with the one of psi_jr
+            if rm1 > 0 and js[rm1-1] // self.sc_idxer.Qs[rm1-1] >= jr // self.sc_idxer.Qs[rm1]:
+                continue
+
             row = [-1] * (5 + self.sc_idxer.r_max)
 
-            js_here = self.sc_idxer.idx_to_path(sc)
-            js_here += (jrp1, )
+            new_path = self.sc_idxer.idx_to_path(sc)
+            new_path += (jr,)
 
             # n, r, sc
-            row[:3] = n, self.layer_r, self.sc_idxer.path_to_idx(js_here)
+            row[:3] = n, self.layer_r, self.sc_idxer.path_to_idx(new_path)
 
             # js
-            row[3: 3 + self.layer_r] = js_here
+            row[3: 3 + self.layer_r] = new_path
 
             # a, low
-            row[-2:] = a, jrp1 == self.sc_idxer.JQ()
+            row[-2:] = a, jr == self.sc_idxer.JQ(rm1+1)
 
             descri_l.append(namedtuple('Descri', out_columns)(*row))
 
