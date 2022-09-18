@@ -104,7 +104,7 @@ class Cov(SubModuleChunk):
             (scl, scr) = (sc, scp) if r > rp or (r == rp and path >= path_p) else (scp, sc)
             jl, jr = self.sc_idxer.idx_to_path(scl, squeeze=False), self.sc_idxer.idx_to_path(scr, squeeze=False)
             rl, rr = self.sc_idxer.r(scl), self.sc_idxer.r(scr)
-            ql, qr = self.sc_idxer.Qs[rl-1], self.sc_idxer.Qs[rr-1]
+            # ql, qr = self.sc_idxer.Qs[rl-1], self.sc_idxer.Qs[rr-1]
 
             if f'm{rl-1}{rr-1}' not in self.m_types:
                 continue
@@ -115,7 +115,11 @@ class Cov(SubModuleChunk):
                 continue
 
             # only consider wavelets with non-negligibale overlapping support in Fourier
-            if abs(path[-1] / ql - path_p[-1] / qr) >= 1:
+            # weak condition: last wavelets must be closer than one octave
+            # if abs(path[-1] / ql - path_p[-1] / qr) >= 1:
+            #     continue
+            # strong condition: last wavelets must be equal
+            if path[-1] != path_p[-1]:
                 continue
 
             # channel interactions
