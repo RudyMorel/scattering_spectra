@@ -1,117 +1,104 @@
 """ Moments to be used on top of a scattering transform. """
 from typing import *
 from itertools import product
-from collections import namedtuple
+import numpy as np
+import pandas as pd
 import torch
+import torch.nn as nn
 
-from scatcov.scattering_network.module_chunk import SubModuleChunk
-from scatcov.scattering_network.scale_indexer import ScaleIndexer
-from scatcov.scattering_network.described_tensor import Description, DescribedTensor
-from scatcov.utils import multid_where_np, multid_where
-import scatcov.utils.complex_utils as cplx
+from scatcov.scattering_network.scale_indexer import ScaleIndexer, ScatteringShape
+from scatcov.scattering_network.described_tensor import Description
 
 
-class Marginal(SubModuleChunk):
+class MarginalLayer(nn.Module):
     """ Compute per channel order q moments. """
     def __init__(self, qs: List[float]):
-        super(Marginal, self).__init__(init_with_input=False)
-        self.m_types = ['m00']
+        super(MarginalLayer, self).__init__()
+        self.m_types = ['marginal']
 
-        self.qs = qs
+        self.register_buffer('qs', torch.tensor(qs))
 
-        # params
-        self.masks = []
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        """ Computes E[|Sx|^q].
 
-    def external_surjection_aux(self, input_descri: NamedTuple) -> List[NamedTuple]:
-        """ Return description that can be computed on input_descri. """
-        out_columns = input_descri._fields + ('q', 'm_type')
-
-        def extend(row, q): return row + (q, 'm00')
-
-        output_descri_l = [namedtuple('Descri', out_columns)(*extend(input_descri, q)) for q in self.qs]
-
-        return output_descri_l
-
-    def internal_surjection(self, output_descri_row: NamedTuple) -> List[NamedTuple]:
-        """ Return rows that can be computed on output_descri_row. """
-        return []
-
-    def init_one_chunk(self, input: DescribedTensor, output_descri: Description, i_chunk: int) -> None:
-        """ Init the parameters of the model required to compute output_descri from input. """
-        masks = []
-
-        for q in self.qs:
-            mask_q = multid_where_np(output_descri.reduce(q=q).drop(columns=['q', 'm_type']).values,
-                                     input.descri.values)
-            masks.append(mask_q)
-
-        self.masks.append(masks)
-
-    def clear_params(self) -> None:
-        self.masks = []
-
-    def get_output_space_dim(self):
-        return 2
-
-    def forward_chunk(self, x: torch.Tensor, i_chunk: int) -> DescribedTensor:
-        """ Computes E[|SX|^q]. """
-        descri = self.descri[i_chunk]
-        mask_qs = self.masks[i_chunk]
-        y = x.new_zeros(x.shape[0], descri.size(), 1, 2)
-
-        for q, mask_q in zip(self.qs, mask_qs):
-            y[:, descri.where(q=q), 0, 0] = cplx.modulus(x[:, mask_q, ...]).pow(q).mean(-1)
-
-        return DescribedTensor(x=None, y=y, descri=descri)
+        :param x: B x N x js x A x T tensor
+        :return: B x K x 1 tensor, where K = len(qs) * N * js * A
+        """
+        return (torch.abs(x).unsqueeze(-1) ** self.qs).mean(-2).view(x.shape[0], -1, 1)
 
 
-class Cov(SubModuleChunk):
-    """ Compute order 1 (per channel) and order 2 (per and cross channel) moments on SX: E[SX], E[SX SX^*]. """
-    def __init__(self, N: int, sc_idxer: ScaleIndexer, m_types: Optional[List[str]] = None):
-        super(Cov, self).__init__(init_with_input=False)
-        self.N = N
+class AvgLowPass(nn.Module):
+    """ Average low passes. """
+    def __init__(self, N: int, A: int, sc_idxer: ScaleIndexer):
+        super(AvgLowPass, self).__init__()
+
+        self.mask_low = np.array([sc_idxer.is_low_pass(idx) for idx in sc_idxer.get_all_idx()])
+
+        self.df = self.get_output_description(N, A, sc_idxer)
+
+    def get_output_description(self, N:int, A: int, sc_idxer: ScaleIndexer) -> pd.DataFrame:
+        """ Return the dataframe that describes the output of forward. """
+        df_n = pd.DataFrame(np.arange(N), columns=['n'])
+        df_j = pd.DataFrame([sc_idxer.JQ(r=1)] + list(range(sc_idxer.JQ(r=1))), columns=['j'])
+        df_a = pd.DataFrame(np.arange(A), columns=['a'])
+
+        df = (
+            df_n
+            .merge(df_j, how='cross')
+            .merge(df_a, how='cross')
+        )
+        return df
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        """ Computes E[x x^T].
+
+        :param x: B x N x js x A x T tensor
+        :return: B x K x 1 tensor
+        """
+        avg = x[:, :, self.mask_low, :, :].mean(-1)
+
+        return avg.view(x.shape[0], -1, 1)
+
+
+class CovLayer(nn.Module):
+    """ Diagonal model along scales. """
+    def __init__(self, shape_l: ScatteringShape, shape_r: ScatteringShape,
+                 sc_idxer: ScaleIndexer,
+                 diagonal_N: bool,
+                 nchunks: int):
+        super(CovLayer, self).__init__()
+        self.shl = shape_l
+        self.shr = shape_r
         self.sc_idxer = sc_idxer
+        self.nchunks = nchunks
+        self.diago_N = diagonal_N
 
-        possible_m_types = [f'm{r1}{r2}' for (r1, r2) in
-                            product(range(self.sc_idxer.r_max), range(self.sc_idxer.r_max)) if r1 >= r2]
-        desired_m_types = m_types or possible_m_types
-        self.m_types = [m for m in desired_m_types if m in possible_m_types]
+        if diagonal_N:
+            assert shape_l.N == shape_r.N, "Diagonal covariance along channels requires same nb of channels."
 
-        # params
-        self.masks = []
+        self.df_scale = self.get_output_description()
 
-    def external_surjection_aux(self, row: NamedTuple) -> List[NamedTuple]:
-        """ Return description that can be computed on input_descri. """
-        n1, r, sc, *js, a, low = row
-        out_columns = ['n1', 'n1p', 'q', 'r', 'rp', 'sc', 'scp'] + \
-                      [f'j{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
-                      [f'jp{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
-                      ['a', 'ap', 're', 'low', 'm_type']
+    def get_output_description(self) -> Description:
+        """ Return the dataframe that describes the output of forward. """
+        scat_idx_iter_l = product(self.sc_idxer.get_all_idx(), range(self.shl.A))
+        scat_idx_iter_r = product(self.sc_idxer.get_all_idx(), range(self.shr.A))
 
-        output_descri_l = []
-
-        # E[SX]
-        if 'm00' in self.m_types and low:
-            output_descri_l.append((n1, n1, 1, max(1, r-1), -1, sc, -1, *js, *(-1,)*len(js), a, -1, low, r==1, 'm00'))
-
-        # E[SX SX^*]
-        for scp in self.sc_idxer.get_all_idx():
-            # scale interactions
-            path = self.sc_idxer.idx_to_path(sc)
-            path_p = self.sc_idxer.idx_to_path(scp)
-            rp = len(path_p)
-
-            (scl, scr) = (sc, scp) if r > rp or (r == rp and path >= path_p) else (scp, sc)
-            jl, jr = self.sc_idxer.idx_to_path(scl, squeeze=False), self.sc_idxer.idx_to_path(scr, squeeze=False)
+        # first assemble a description for scales and phase indices
+        info_l = []
+        for ((scl, al), (scr, ar)) in product(scat_idx_iter_l, scat_idx_iter_r):
             rl, rr = self.sc_idxer.r(scl), self.sc_idxer.r(scr)
-            # ql, qr = self.sc_idxer.Qs[rl-1], self.sc_idxer.Qs[rr-1]
+            if rl > rr:
+                continue
 
-            if f'm{rl-1}{rr-1}' not in self.m_types:
+            pathl, pathr = self.sc_idxer.idx_to_path(scl), self.sc_idxer.idx_to_path(scr)
+            jl, jr = self.sc_idxer.idx_to_path(scl, squeeze=False), self.sc_idxer.idx_to_path(scr, squeeze=False)
+
+            if jl < jr and rl == rr == 2:
                 continue
 
             # correlate low pass with low pass or band pass with band pass and nothing else
-            if (self.sc_idxer.is_low_pass(sc) and not self.sc_idxer.is_low_pass(scp)) or \
-                    (not self.sc_idxer.is_low_pass(sc) and self.sc_idxer.is_low_pass(scp)):
+            if (self.sc_idxer.is_low_pass(scl) and not self.sc_idxer.is_low_pass(scr)) or \
+                    (not self.sc_idxer.is_low_pass(scl) and self.sc_idxer.is_low_pass(scr)):
                 continue
 
             # only consider wavelets with non-negligibale overlapping support in Fourier
@@ -119,125 +106,140 @@ class Cov(SubModuleChunk):
             # if abs(path[-1] / ql - path_p[-1] / qr) >= 1:
             #     continue
             # strong condition: last wavelets must be equal
-            if path[-1] != path_p[-1]:
+            if pathl[-1] != pathr[-1]:
                 continue
 
-            # channel interactions
-            for n1p in range(n1, self.N):
-                if (rr == rl == 1) and n1p < n1:
-                    continue
-                out_descri = (n1, n1p, 2, rl, rr, scl, scr, *jl, *jr, a, a, low or scl == scr, low, f'm{rl-1}{rr-1}')
-                output_descri_l.append(out_descri)
+            low = self.sc_idxer.is_low_pass(scl)
 
-        return [namedtuple('Description', out_columns)(*row) for row in output_descri_l]
+            info_l.append((2, rl, rr, scl, scr, *jl, *jr, al, ar, low or scl == scr, low,
+                           'ps' if rl * rr == 1 else 'phaseenv' if rl * rr == 2 else 'envelope'))
 
-    def internal_surjection(self, output_descri_row: NamedTuple) -> List[NamedTuple]:
-        """ Return rows that can be computed on output_descri_row. """
-        return []
+        out_columns = ['q', 'rl', 'rr', 'scl', 'scr'] + \
+                      [f'jl{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
+                      [f'jr{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
+                      ['al', 'ar', 're', 'low', 'm_type']
+        df_scale = pd.DataFrame(info_l, columns=out_columns)
 
-    def init_one_chunk(self, input: DescribedTensor, output_descri: Description, i_chunk: int) -> None:
-        """ Init the parameters of the model required to compute output_descri from input. """
-        channel_scale = input.descri.to_array(['n1', 'sc'])
+        # now do a diagonal or cartesian product along channels
+        df_scale = (
+            df_scale
+            .drop('jl2', axis=1)
+            .rename(columns={'jr2': 'j2'})
+            .replace(-1, np.nan)
+        )
+        df_scale['j2'] = df_scale['j2'].astype('Int64')
 
-        # mask q = 1: E[SX]
-        mask_q1 = multid_where_np(output_descri.reduce(q=1).to_array(['n1', 'sc']), channel_scale)
+        return Description(df_scale)
 
-        # mask q = 2: E[SX SX^*]
-        mask_q2_l = multid_where_np(output_descri.reduce(q=2).to_array(['n1', 'sc']), channel_scale)
-        mask_q2_r = multid_where_np(output_descri.reduce(q=2).to_array(['n1p', 'scp']), channel_scale)
+    def cov(self, xl: torch.tensor, xr: torch.tensor) -> torch.tensor:
+        """ Computes Cov(xl, xr).
 
-        self.masks.append((mask_q1, (mask_q2_l, mask_q2_r)))
+        :param xl: B x Nl x K x T tensor
+        :param xr: B x Nr x K x T tensor
+        :return: B x Nl x Nr x K tensor, with Nr = 1 if diagonal model along channels
+        """
+        if self.diago_N:
+            return (xl * xr).mean(-1).unsqueeze(-3)
+        xl = xl.transpose(-2, -3)
+        xr = xr.transpose(-2, -3)
+        return xl @ xr.transpose(-1, -2) / xl.shape[-1]
 
-    def get_output_space_dim(self):
-        return 2
+    def forward(self, sxl: torch.tensor, sxr: Optional[torch.tensor] = None) -> torch.tensor:
+        """ Extract diagonal covariances j2=j'2.
 
-    def clear_params(self) -> None:
-        self.masks = []
+        :param sxl: B x Nl x jl x Al x T tensor
+        :param sxr: B x Nr x jr x Ar x T tensor
+        :return: B x Nl x Nr x K x 1 tensor, with Nr = 1 if diagonal model along channels
+        """
+        if sxr is None:
+            sxr = sxl
 
-    def forward_chunk(self, x: torch.Tensor, i_chunk: int) -> DescribedTensor:
-        """ Computes E[SX] and E[SX SX^*]. """
-        descri = self.descri[i_chunk]
-        mask_q1, masks_q2 = self.masks[i_chunk]
-        y = x.new_zeros((x.shape[0], descri.size(), 1, 2))
+        scl, al, scr, ar = self.df_scale[['scl', 'al', 'scr', 'ar']].values.T
 
-        # q = 1: E[SX]
-        y[:, descri.where(q=1), 0, :] = x[:, mask_q1, :, :].mean(-2)
+        y_l = [
+            self.cov(sxl[:, :, scl[chunk], al[chunk], :], sxr[:, :, scr[chunk], ar[chunk], :].conj())
+            for chunk in np.array_split(np.arange(self.df_scale.shape[0]), self.nchunks)
+        ]
+        y = torch.cat(y_l, -1)
 
-        # q = 2: E[SX SX^*]
-        zl = x[:, masks_q2[0], :, :]
-        zr = cplx.conjugate(x[:, masks_q2[1], :, :])
-        y[:, descri.where(q=2), 0, :] = cplx.mul(zl, zr).mean(-2)
-
-        return DescribedTensor(x=None, y=y, descri=descri)
+        return y.unsqueeze(-1)
 
 
-class CovStat(SubModuleChunk):
-    """ Reduced representation by making covariances invariant to scaling.
-    Moments:
-        - m00  :   E|X*psi_j|, E|X*psi_j|^2
-        - m10  :   E^-1 E[|X*psi_{j-a}|*psi_j X*psi_j]
-        - m11  :   E^-1 E[|x*psi_j|*psi_{j-b} |x*psi{j-a}|*psi_{j-b}^*]
-    """
-    def __init__(self, JQ: int, m_types: Optional[List[str]] = None):
-        super(CovStat, self).__init__(init_with_input=False)
-        self.JQ = JQ
+class CovInvariantLayer(nn.Module):
+    """ Reduced representation by making covariances invariant to scaling. """
+    def __init__(self, shape_l: ScatteringShape, shape_r: ScatteringShape, sc_idxer: ScaleIndexer, df_input: pd.DataFrame):
+        super(CovInvariantLayer, self).__init__()
+        self.shl = shape_l
+        self.shr = shape_r
+        self.sc_idxer = sc_idxer
 
-        possible_m_types = ['m00', 'm10', 'm11']
-        desired_m_types = m_types or possible_m_types
-        self.m_types = [m for m in desired_m_types if m in possible_m_types]
+        self.df_input = df_input
+        self.df_output = self.get_output_description()
 
-    def external_surjection_aux(self, row: NamedTuple) -> List[NamedTuple]:
-        """ Return description that can be computed on input_descri. """
-        n1, n1p, q, r1, rp1, sc, scp, j1, j2, jp1, jp2, a1, ap1, re, low, m_type = row
-        out_columns = ['n1', 'n1p', 'q', 'r', 'rp', 'j', 'a', 'b', 're', 'low', 'm_type']
-        row_l = []
-        if m_type == 'm00' and 'm00' in self.m_types:
-            row_l.append((n1, n1p, q, r1, rp1, j1, 0, 0, re, low, m_type))
-        if m_type == 'm10' and 'm10' in self.m_types:
-            j, a = (j1, 0) if low else (-1, jp1 - j1)
-            row_l.append((n1, n1p, q, r1, rp1, j, a, 0, low, low, 'm10'))
-        if m_type == 'm11' and 'm11' in self.m_types:
-            a, b = j1 - jp1, (0 if low else j1 - j2)
-            row_l.append((n1, n1p, q, r1, rp1, j1 if low else -1, a, b, a == 0 or low, low, 'm11'))
+        self.register_buffer('P', self._construct_invariant_projector())
 
-        return [namedtuple('Description', out_columns)(*row) for row in row_l]
+    def get_output_description(self) -> pd.DataFrame:
+        """ Return the dataframe that describes the output of forward. """
+        J = self.sc_idxer.JQ(1)
 
-    def internal_surjection(self, output_descri_row: NamedTuple) -> List[NamedTuple]:
-        """ Return rows that can be computed on output_descri_row. """
-        return []
+        data = []
 
-    def construct_proj(self, input: DescribedTensor, output_descri: Description) -> torch.tensor:
-        """ Construct the projector A that performs the average on scale. """
-        input_descri = input.descri
-        output_descri_iter = list(output_descri.iter_tuple())
+        # phase-envelope coefficients
+        for a in range(1, J):
+            data.append((2, 2, 1, a, 1000000, 0, 0, False, False, 'phaseenv'))
 
-        # init projector
-        proj = torch.zeros(output_descri.size(), input_descri.size(), dtype=torch.float64)
-        for i, in_row in enumerate(input_descri.iter_tuple()):
-            out_rows = self.external_surjection_aux(in_row)
-            mask = multid_where(out_rows, output_descri_iter)
-            proj[mask, i] = 1.0
+        # scattering coefficients
+        for (a, b) in product(range(J-1), range(-J+1, 0)):
+            if a - b >= J:
+                continue
+            data.append((2, 2, 3, a, b, 0, 0, a == 0, False, 'envelope'))
 
-        # to get average along j and not sum
-        proj /= proj.sum(-1, keepdim=True)
+        df_output = pd.DataFrame(data, columns=['q', 'rl', 'rr', 'a', 'b', 'al', 'ar', 're', 'low', 'm_type'])
+        df_output = df_output.replace(1000000, np.nan)
+        df_output['b'] = df_output['b'].astype('Int64')
 
-        assert (proj.sum(-1) == 0).sum() == 0
+        return df_output
 
-        return proj
+    def _construct_invariant_projector(self) -> torch.tensor:
+        """ The projector P that takes a scattering covariance matrix C and computes PC the invariant projection. """
+        J = self.sc_idxer.JQ(1)
+        df = Description(self.df_input)
 
-    def init_one_chunk(self, input: DescribedTensor, output_descri: Description, i_chunk: int) -> None:
-        """ Init the parameters of the model required to compute output_descri from input. """
-        self.register_buffer(f'proj_{i_chunk}', self.construct_proj(input, output_descri))
+        P_l = []
 
-    def get_output_space_dim(self):
-        return 2
+        # phase-envelope coefficients
+        for a in range(1, J):
+            P_row = torch.zeros(self.df_input.shape[0], dtype=torch.complex128)
+            for j in range(a, J):
+                mask = df.where(jl1=j, jr1=j-a, m_type='phaseenv')
+                assert mask.sum() == 1
+                P_row[mask] = 1.0
+            P_l.append(P_row)
 
-    def forward_chunk(self, x: torch.tensor, i_chunk: int) -> DescribedTensor:
-        """ Performs the average on scale j to make the covariances invariant to scaling. """
-        descri = self.descri[i_chunk]
+        # scattering coefficients
+        for (a, b) in product(range(J-1), range(-J+1, 0)):
+            if a - b >= J:
+                continue
 
-        proj = self.state_dict()[f'proj_{i_chunk}']
+            P_row = torch.zeros(self.df_input.shape[0], dtype=torch.complex128)
+            for j in range(a, J+b):
+                mask = df.where(jl1=j, jr1=j-a, j2=j-b)
+                assert mask.sum() == 1
+                P_row[mask] = 1.0
+            P_l.append(P_row)
 
-        moments = cplx.mm(cplx.from_real(proj), x)
+        P = torch.stack(P_l)
 
-        return DescribedTensor(x=None, descri=descri, y=moments)
+        # to get average along j instead of sum
+        P /= P.sum(-1, keepdim=True)
+
+        return P
+
+    def forward(self, cov: torch.tensor) -> torch.tensor:
+        """
+        Keeps the scale invariant part of a Scattering Covariance. It is obtained by projection.
+
+        :param cov: B x Nl x Nr x K x 1 tensor
+        :return:
+        """
+        return self.P @ cov

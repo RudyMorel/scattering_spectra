@@ -1,3 +1,4 @@
+""" Utils function for manipulating collections. """
 from typing import *
 import itertools
 import numpy as np
@@ -16,6 +17,14 @@ def compose(*functions: Callable) -> Callable:
             arg = f(arg)
         return arg
     return inner
+
+
+def select_rs(x, r, s):
+    if r is not None:
+        x = x[min(r, x.shape[0] - 1):min(r, x.shape[0] - 1) + 1, :, :]
+    if s is not None:
+        x = x[:, min(s, x.shape[1] - 1):min(s, x.shape[1] - 1) + 1, :]
+    return x
 
 
 def dfs_edges(g, source=None, depth_limit=None):

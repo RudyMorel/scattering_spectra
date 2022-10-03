@@ -1,3 +1,4 @@
+""" Utils function for manipulating tensors. """
 from typing import *
 import numpy as np
 import torch
@@ -18,8 +19,7 @@ def to_numpy(tensor):
 
 
 def multid_where(a: Iterable, b: Iterable) -> List:
-    """
-    Find the position in b of each element of a.
+    """ Find the position in b of each element of a.
 
     :param a: (K) x n array
     :param b: C x n array
@@ -32,8 +32,7 @@ def multid_where(a: Iterable, b: Iterable) -> List:
 
 
 def multid_where_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """
-    Find the position in b of each element of a.
+    """ Find the position in b of each element of a.
 
     :param a: (K) x n array
     :param b: C x n array
@@ -49,8 +48,7 @@ def multid_where_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def multid_row_isin(a, b):
-    """
-    Returns if the row k in A is fully present in B.
+    """ Returns if the row k in A is fully present in B.
 
     :param a: K x J x n array
     :param b: C x n array

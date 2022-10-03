@@ -1,15 +1,15 @@
+""" Gaussian models. """
 import warnings
 import numpy as np
 from numpy.random import normal as nd
 
 
 def gaussian_cme(cov, R, T):
-    """
-    Create R syntheses of a gaussian process of length T with the specified
+    """ Create S synthesis of a gaussian process of length T with the specified
     autocovariance through circulant matrix embedding (see C. R. Dietrich AND G. N. Newsam).
 
     :param cov: T array, function r such that Cov[Y(x)Y(y)] = r(|x-y|)
-    :param: R: int, number of synthesis
+    :param: S: int, number of synthesis
     :param T: int, number of samples
     """
 
@@ -33,8 +33,7 @@ def gaussian_cme(cov, R, T):
 
 
 def fbm(R, T, H, sigma=1, dt=None):
-    """
-    Create a realization of fractional Brownian motion using circulant
+    """ Create a realization of fractional Brownian motion using circulant
     matrix embedding.
 
     Inputs:
@@ -64,8 +63,8 @@ def fbm(R, T, H, sigma=1, dt=None):
 
 
 def geom_brownian(R: int, T: float, nb_sample: int, S0: float, mu: float, sigma: float):
-    """Simulate a geometric brownian also called Black-Scholes trajectory of adimensional trend mu and vol sigma."""
+    """ Simulate a geometric brownian also called Black-Scholes trajectory of trend mu and vol sigma. """
     B = np.cumsum(np.random.randn(R, nb_sample), -1) / np.sqrt(nb_sample)
-    X = S0 * np.exp((mu - 0.5 * sigma ** 2) * np.arange(T) + sigma * np.sqrt(T) * (B - B[:, 0:1]))
+    x = S0 * np.exp((mu - 0.5 * sigma ** 2) * np.linspace(0, T, nb_sample) + sigma * np.sqrt(T) * (B - B[:, 0:1]))
 
-    return X
+    return x

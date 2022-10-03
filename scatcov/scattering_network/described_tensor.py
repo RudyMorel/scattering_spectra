@@ -8,10 +8,10 @@ import pandas as pd
 
 from scatcov.utils import get_permutation
 
-"""
+""" 
 Tensor shapes:
 - x: input, of shape  (B, N, T)
-- y: output, of shape (B, K, T, 2) where K is the number of coefficients
+- y: output, of shape (B, K, T) where K is the number of coefficients
 """
 
 
@@ -53,9 +53,11 @@ class Description(pd.DataFrame):
         """ Return the mask of rows satisfying kwargs conditions. """
         masks = [np.ones(self.size(), dtype=bool)]
         for key, value in kwargs.items():
+            if key not in self.columns:
+                raise ValueError(f"Column {key} is not in description.")
             if isinstance(value, (str, int, float)):
                 value = [value]
-            masks.append(np.isin(self[key], value))
+            masks.append(self[key].isin(value).values.astype(bool))  # cast as bool type because of NaN values
         return np.logical_and.reduce(masks)
 
     def reduce(self, mask: Optional[np.ndarray] = None, **kwargs) -> Description:
@@ -164,8 +166,9 @@ class DescribedTensor:
 
     def sort(self, by: Optional[List[str]] = None) -> DescribedTensor:
         """ Sort lexicographically based on description. """
-        descri_sorted = self.descri.sort(by=by)
-        order = get_permutation(self.descri.index.values, descri_sorted.index.values)
+        descri_original = Description(self.descri.reset_index(drop=True))
+        descri_sorted = descri_original.sort(by=by)
+        order = get_permutation(descri_original.index.values, descri_sorted.index.values)
         return DescribedTensor(x=self.x, y=self.y[:, order, ...], descri=descri_sorted)
 
     # def drop_column(self, columns: List[str]) -> DescribedTensor:

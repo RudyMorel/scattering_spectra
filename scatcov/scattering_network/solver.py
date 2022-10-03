@@ -5,11 +5,8 @@ from time import time
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn.functional import relu
 from torch.autograd import Variable, grad
 
-import scatcov.utils.complex_utils as cplx
-from scatcov.scattering_network.module_chunk import ModuleChunk
 from scatcov.scattering_network.described_tensor import DescribedTensor
 
 
@@ -38,9 +35,9 @@ def compute_w_l2(weights, model, w_gap, nchunks):
 
 class Solver(nn.Module):
     """ A class that contains all information necessary for generation. """
-    def __init__(self, model: ModuleChunk, loss: nn.Module,
-                 xf: Optional[torch.Tensor] = None, Rxf: Optional[DescribedTensor] = None,
-                 x0: Optional[torch.Tensor] = None,
+    def __init__(self, model: nn.Module, loss: nn.Module,
+                 xf: Optional[np.ndarray] = None, Rxf: Optional[DescribedTensor] = None,
+                 x0: Optional[np.ndarray] = None,
                  weights: Optional[Dict[str, float]] = None, cuda: bool = False, relative_optim: bool = False):
         super(Solver, self).__init__()
 
@@ -48,9 +45,10 @@ class Solver(nn.Module):
         self.loss = loss
 
         self.N = xf.shape[2]
-        self.nchunks = self.model.nchunks
+        self.nchunks = 1
         self.is_cuda = cuda
-        self.xf = cplx.from_np(xf)
+        self.x0 = torch.DoubleTensor(x0)
+        self.xf = torch.DoubleTensor(xf)
 
         self.res = None, None
 
@@ -60,31 +58,16 @@ class Solver(nn.Module):
             if Rxf is not None:
                 Rxf = Rxf.cuda()
 
-        # compute target representation RXf
-        self.Rxf = [Rxf]
-
-        # compute weights from target representation
-        self.w_gap, self.w_l2 = [None] * self.nchunks, [None] * self.nchunks
-        if relative_optim:
-            eps = 1e-7
-            lRxf = [-self.loss.compute_gap(None, Rxf_chunk, None) for Rxf_chunk in self.Rxf]
-            self.w_gap = [(relu(cplx.modulus(lRxf_chunk) - eps) + eps) ** (-1) for lRxf_chunk in lRxf]
-
-            nbs = {m_type: model.count_coefficients(m_type=m_type) for m_type in model.m_types}
-            N_total, scat = sum(nbs.values()), len(model.m_types)
-            if weights is None:
-                weights = {m_type: 1 / (scat * nbs[m_type]) for m_type in model.m_types}
-            self.w_l2 = compute_w_l2(weights, model, self.w_gap, self.nchunks)
+        # compute target representation Rxf
+        self.Rxf = Rxf
 
         # compute initial loss
-        self.loss0 = 0.0
-        for i_chunk in range(self.nchunks):
-            Rx0_chunk = self.model(self.format(x0, requires_grad=False), i_chunk)
-            self.loss0 += self.loss(Rx0_chunk, self.Rxf[i_chunk], self.w_gap[i_chunk], self.w_l2[i_chunk]).detach().cpu().numpy()
+        Rx0_chunk = self.model(self.format(x0, requires_grad=False))
+        self.loss0 = self.loss(Rx0_chunk, self.Rxf, None, None).detach().cpu().numpy()
 
     def format(self, x: np.ndarray, requires_grad=True):
         """ Transforms x into a compatible format for the embedding. """
-        x = cplx.from_np(x.reshape(1, self.N, -1), tensor=torch.DoubleTensor)
+        x = torch.DoubleTensor(x.reshape(self.x0.shape)).unsqueeze(-2).unsqueeze(-2)
         if self.is_cuda:
             x = x.cuda()
         x = Variable(x, requires_grad=requires_grad)
@@ -92,42 +75,38 @@ class Solver(nn.Module):
 
     def joint(self, x: np.ndarray):
         """ Computes the loss on current vector. """
+
         # format x and set gradient to 0
         x_torch = self.format(x)
 
-        total_loss = np.array([0.0], dtype=np.float64)
-        total_grad_x = np.zeros(x_torch.shape, dtype=np.float64)[0, ..., 0]
+        res_max = {m_type: 0.0 for m_type in self.model.m_types}
 
-        res_max = {m_type: 0.0 for m_type in self.model.module_list[-1].m_types}
-        for i_chunk in range(self.nchunks):
-            # clear gradient
-            if x_torch.grad is not None:
-                x_torch.grad.X.zero_()
+        # clear gradient
+        if x_torch.grad is not None:
+            x_torch.grad.x.zero_()
 
-            # compute moments
-            Rxt_chunk = self.model(x_torch, i_chunk)
+        # compute moments
+        # self.time_tracker.start('forward')
+        Rxt = self.model(x_torch)
 
-            # compute loss function
-            loss = self.loss(Rxt_chunk, self.Rxf[i_chunk], self.w_gap[i_chunk], self.w_l2[i_chunk])
-            res_max = {m_type: max(res_max[m_type], self.loss.max_gap[m_type] if m_type in self.loss.max_gap else 0.0)
-                       for m_type in self.model.module_list[-1].m_types}
+        # compute loss function
+        # self.time_tracker.start('loss')
+        loss = self.loss(Rxt, self.Rxf, None, None)
+        res_max = {m_type: max(res_max[m_type], self.loss.max_gap[m_type] if m_type in self.loss.max_gap else 0.0)
+                   for m_type in self.model.m_types}
 
-            # compute gradient
-            grad_x, = grad([loss], [x_torch], retain_graph=True)
+        # compute gradient
+        # self.time_tracker.start('backward')
+        grad_x, = grad([loss], [x_torch], retain_graph=True)
 
-            # only get the real part
-            grad_x = grad_x[0, ..., 0]
+        # move to numpy
+        # self.time_tracker.start('move_np')
+        grad_x = grad_x.contiguous().detach().cpu().numpy()
+        loss = loss.detach().cpu().numpy()
 
-            # move to numpy
-            grad_x = grad_x.contiguous().detach().cpu().numpy()
-            loss = loss.detach().cpu().numpy()
+        self.res = loss, grad_x.ravel(), res_max
 
-            total_loss += loss
-            total_grad_x += grad_x
-
-        self.res = total_loss, total_grad_x.ravel(), res_max
-
-        return total_loss, total_grad_x.ravel()
+        return loss, grad_x.ravel()
 
 
 class SmallEnoughException(Exception):
@@ -155,7 +134,7 @@ class CheckConvCriterion:
         self.logs_grad = []
         self.logs_x = []
 
-        self.curr_xk = cplx.to_np(solver.xf).real[0, 0, 0, :]
+        self.curr_xk = solver.xf
 
     def __call__(self, xk: np.ndarray):
         err, grad_xk, max_gap = self.solver.res

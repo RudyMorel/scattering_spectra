@@ -15,6 +15,14 @@ import torch
 """
 
 
+class ScatteringShape:
+    def __init__(self, N: int, n_scales: int, A: int, T: int):
+        self.N = N
+        self.n_scales = n_scales
+        self.A = A
+        self.T = T
+
+
 class ScaleIndexer:
     """ Implements the scale paths used in the scattering transform. """
     def __init__(self, J: int, Qs: List[int], r_max: int):
