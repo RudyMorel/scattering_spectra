@@ -21,8 +21,8 @@ class MSELossScat(nn.Module):
         gap = gap[:, :, 0]
 
         gap = gap if weights is None else weights.unsqueeze(-1) * gap
-        self.max_gap = {m_type: torch.max(torch.abs(gap[:, target.descri.where(m_type=m_type)])).item()
-                        for m_type in np.unique(target.descri['m_type'])}
+        self.max_gap = {c_type: torch.max(torch.abs(gap[:, target.descri.where(c_type=c_type)])).item()
+                        for c_type in np.unique(target.descri['c_type'])}
         return gap
 
     def forward(self, input, target, weights_gap, weights_l2):
@@ -49,7 +49,7 @@ class MSELossCov(nn.Module):
         # cov
         gap[target.descri.where(q=2), :] = input.select(q=2) - target.select(q=2)
 
-        self.max_gap = {m_type: torch.max(torch.abs(gap[target.descri.where(m_type=m_type)])).item()
-                        for m_type in np.unique(target.descri['m_type'])}
+        self.max_gap = {c_type: torch.max(torch.abs(gap[target.descri.where(c_type=c_type)])).item()
+                        for c_type in np.unique(target.descri['c_type'])}
 
         return torch.abs(gap).pow(2.0).mean()

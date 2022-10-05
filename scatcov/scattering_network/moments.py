@@ -10,11 +10,11 @@ from scatcov.scattering_network.scale_indexer import ScaleIndexer, ScatteringSha
 from scatcov.scattering_network.described_tensor import Description
 
 
-class MarginalLayer(nn.Module):
-    """ Compute per channel order q moments. """
+class ScatCoefficients(nn.Module):
+    """ Compute per channel (marginal) order q moments. """
     def __init__(self, qs: List[float]):
-        super(MarginalLayer, self).__init__()
-        self.m_types = ['marginal']
+        super(ScatCoefficients, self).__init__()
+        self.c_types = ['marginal']
 
         self.register_buffer('qs', torch.tensor(qs))
 
@@ -22,9 +22,9 @@ class MarginalLayer(nn.Module):
         """ Computes E[|Sx|^q].
 
         :param x: B x N x js x A x T tensor
-        :return: B x K x 1 tensor, where K = len(qs) * N * js * A
+        :return: B x N x js x 1 x len(qs) tensor
         """
-        return (torch.abs(x).unsqueeze(-1) ** self.qs).mean(-2).view(x.shape[0], -1, 1)
+        return (torch.abs(x).unsqueeze(-1) ** self.qs).mean(-2)
 
 
 class AvgLowPass(nn.Module):
@@ -60,21 +60,17 @@ class AvgLowPass(nn.Module):
         return avg.view(x.shape[0], -1, 1)
 
 
-class CovLayer(nn.Module):
+class Cov(nn.Module):
     """ Diagonal model along scales. """
     def __init__(self, shape_l: ScatteringShape, shape_r: ScatteringShape,
                  sc_idxer: ScaleIndexer,
-                 diagonal_N: bool,
                  nchunks: int):
-        super(CovLayer, self).__init__()
+        super(Cov, self).__init__()
         self.shl = shape_l
         self.shr = shape_r
         self.sc_idxer = sc_idxer
         self.nchunks = nchunks
-        self.diago_N = diagonal_N
-
-        if diagonal_N:
-            assert shape_l.N == shape_r.N, "Diagonal covariance along channels requires same nb of channels."
+        assert shape_l.N == shape_r.N, "Diagonal covariance along channels requires same nb of channels."
 
         self.df_scale = self.get_output_description()
 
@@ -117,7 +113,7 @@ class CovLayer(nn.Module):
         out_columns = ['q', 'rl', 'rr', 'scl', 'scr'] + \
                       [f'jl{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
                       [f'jr{r}' for r in range(1, self.sc_idxer.r_max + 1)] + \
-                      ['al', 'ar', 're', 'low', 'm_type']
+                      ['al', 'ar', 're', 'low', 'c_type']
         df_scale = pd.DataFrame(info_l, columns=out_columns)
 
         # now do a diagonal or cartesian product along channels
@@ -138,11 +134,7 @@ class CovLayer(nn.Module):
         :param xr: B x Nr x K x T tensor
         :return: B x Nl x Nr x K tensor, with Nr = 1 if diagonal model along channels
         """
-        if self.diago_N:
-            return (xl * xr).mean(-1).unsqueeze(-3)
-        xl = xl.transpose(-2, -3)
-        xr = xr.transpose(-2, -3)
-        return xl @ xr.transpose(-1, -2) / xl.shape[-1]
+        return (xl * xr).mean(-1).unsqueeze(-3)
 
     def forward(self, sxl: torch.tensor, sxr: Optional[torch.tensor] = None) -> torch.tensor:
         """ Extract diagonal covariances j2=j'2.
@@ -165,10 +157,10 @@ class CovLayer(nn.Module):
         return y.unsqueeze(-1)
 
 
-class CovInvariantLayer(nn.Module):
+class CovScaleInvariant(nn.Module):
     """ Reduced representation by making covariances invariant to scaling. """
     def __init__(self, shape_l: ScatteringShape, shape_r: ScatteringShape, sc_idxer: ScaleIndexer, df_input: pd.DataFrame):
-        super(CovInvariantLayer, self).__init__()
+        super(CovScaleInvariant, self).__init__()
         self.shl = shape_l
         self.shr = shape_r
         self.sc_idxer = sc_idxer
@@ -194,7 +186,7 @@ class CovInvariantLayer(nn.Module):
                 continue
             data.append((2, 2, 3, a, b, 0, 0, a == 0, False, 'envelope'))
 
-        df_output = pd.DataFrame(data, columns=['q', 'rl', 'rr', 'a', 'b', 'al', 'ar', 're', 'low', 'm_type'])
+        df_output = pd.DataFrame(data, columns=['q', 'rl', 'rr', 'a', 'b', 'al', 'ar', 're', 'low', 'c_type'])
         df_output = df_output.replace(1000000, np.nan)
         df_output['b'] = df_output['b'].astype('Int64')
 
@@ -211,7 +203,7 @@ class CovInvariantLayer(nn.Module):
         for a in range(1, J):
             P_row = torch.zeros(self.df_input.shape[0], dtype=torch.complex128)
             for j in range(a, J):
-                mask = df.where(jl1=j, jr1=j-a, m_type='phaseenv')
+                mask = df.where(jl1=j, jr1=j-a, c_type='phaseenv')
                 assert mask.sum() == 1
                 P_row[mask] = 1.0
             P_l.append(P_row)

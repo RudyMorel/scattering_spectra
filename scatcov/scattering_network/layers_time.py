@@ -32,12 +32,12 @@ class ReflectionPad(Pad1d):
         return x[..., :self.T]
 
 
-class WaveletLayer(nn.Module):
+class Wavelet(nn.Module):
     """ Wavelet convolutional operator. """
     def __init__(self, T: int, J: int, Q: int,
                  wav_type: str, high_freq: float, wav_norm: str,
                  layer_r: int, sc_idxer: ScaleIndexer):
-        super(WaveletLayer, self).__init__()
+        super(Wavelet, self).__init__()
         self.T, self.J, self.Q, self.layer_r = 2 * T, J, Q, layer_r
         self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
         self.sc_idxer = sc_idxer

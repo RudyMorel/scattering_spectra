@@ -12,21 +12,21 @@ from scatcov.scattering_network.described_tensor import DescribedTensor
 
 def compute_w_l2(weights, model, w_gap, nchunks):
     # normalize by the number of coeffs at each order
-    # weights = {m_type: 1 / (scat * nbs[m_type]) for m_type in R.moment_types}
-    # # weights = {m_type: 1.0 for m_type in moments.moment_types}
+    # weights = {c_type: 1 / (scat * nbs[c_type]) for c_type in R.moment_types}
+    # # weights = {c_type: 1.0 for c_type in moments.moment_types}
     # weights = {'marginal': 100, 'mixed': 10, 'tenv': 10, 'senv': 10, 'tsenv': 5}
     # # weights = {'norm1': 10, 'norm2': 5, 'norm2lpcross': 5, 'norm2lpmixed': 5, 'lev': 7, 'zum': 1e-12}# for perfect L
 
-    nbs = {m_type: model.count_coefficients(m_type=m_type) for m_type in model.m_types}
+    nbs = {c_type: model.count_coefficients(c_type=c_type) for c_type in model.c_types}
 
-    weights_sum = sum([weights[m_type] * nbs[m_type] for m_type in model.m_types])
+    weights_sum = sum([weights[c_type] * nbs[c_type] for c_type in model.c_types])
     weights = {key: weights[key] / weights_sum for key in weights.keys()}
     w_l2 = [None] * nchunks
     for i_chunk in range(nchunks):
         w_l2[i_chunk] = torch.ones_like(w_gap[i_chunk])
-        for m_type in model.m_types:
-            coeff_type_mask = model.descri_chunked[-1][i_chunk].where(m_type=m_type)
-            w_l2[i_chunk][coeff_type_mask] *= weights[m_type]
+        for c_type in model.c_types:
+            coeff_type_mask = model.descri_chunked[-1][i_chunk].where(c_type=c_type)
+            w_l2[i_chunk][coeff_type_mask] *= weights[c_type]
 
     assert abs(sum([w.sum() for w in w_l2]) - 1.0) < 1e-6
 
@@ -79,7 +79,7 @@ class Solver(nn.Module):
         # format x and set gradient to 0
         x_torch = self.format(x)
 
-        res_max = {m_type: 0.0 for m_type in self.model.m_types}
+        res_max = {c_type: 0.0 for c_type in self.model.c_types}
 
         # clear gradient
         if x_torch.grad is not None:
@@ -92,8 +92,8 @@ class Solver(nn.Module):
         # compute loss function
         # self.time_tracker.start('loss')
         loss = self.loss(Rxt, self.Rxf, None, None)
-        res_max = {m_type: max(res_max[m_type], self.loss.max_gap[m_type] if m_type in self.loss.max_gap else 0.0)
-                   for m_type in self.model.m_types}
+        res_max = {c_type: max(res_max[c_type], self.loss.max_gap[c_type] if c_type in self.loss.max_gap else 0.0)
+                   for c_type in self.model.c_types}
 
         # compute gradient
         # self.time_tracker.start('backward')
@@ -177,7 +177,7 @@ class CheckConvCriterion:
             + f"{np.sqrt(self.err):.2E} -- {max(self.max_gap.values()):.2E} -- {self.gerr:.2E}",
             'cyan'))
         print(colored(
-            "".join([f"\n ----- {m_type} {value:.2e}, " for m_type, value in self.max_gap.items()])
+            "".join([f"\n ----- {c_type} {value:.2e}, " for c_type, value in self.max_gap.items()])
             + msg,
             'green'))
 
