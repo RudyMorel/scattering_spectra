@@ -10,11 +10,18 @@ from scatcov.scattering_network.scale_indexer import ScaleIndexer
 
 # Fourier and torch compatibility
 if version.parse(torch.__version__) >= version.parse('1.8'):
-    fft = lambda x: torch.fft.fft(x)
-    ifft = lambda x: torch.fft.ifft(x)
+    fft = torch.fft.fft
+    ifft = torch.fft.ifft
 else:
-    fft = lambda x: torch.view_as_complex(torch.fft(torch.view_as_real(x), 1, normalized=False))
-    ifft = lambda x: torch.view_as_complex(torch.ifft(torch.view_as_real(x), 1, normalized=False))
+    def fft(x):
+        if torch.is_floating_point(x):
+            x = x.type(torch.complex128)
+        return torch.view_as_complex(torch.fft(torch.view_as_real(x), 1, normalized=False))
+
+    def ifft(x):
+        if torch.is_floating_point(x):
+            x = x.type(torch.complex128)
+        return torch.view_as_complex(torch.ifft(torch.view_as_real(x), 1, normalized=False))
 
 
 class Pad1d(nn.Module):
