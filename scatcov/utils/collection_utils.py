@@ -1,7 +1,9 @@
 """ Utils function for manipulating collections. """
 from typing import *
+from functools import reduce
 import itertools
 import numpy as np
+import pandas as pd
 
 
 def transpose(li: Iterable[Iterable]) -> List[List]:
@@ -91,3 +93,9 @@ def split_equal_sum(li: List[int], r: int) -> Tuple[List[List[int]], List[List[i
         sums[i0] += x
 
     return list(subindices.values()), list(sublists.values())
+
+
+def df_merge(*dfs):
+    for df in dfs:
+        df['key'] = 1
+    return reduce(lambda l, r: pd.merge(l, r, on='key'), dfs).drop(columns='key')

@@ -4,14 +4,14 @@ from pathlib import Path
 from itertools import product
 from time import time
 
-import pandas as pd
 import scipy
 import numpy as np
 import torch
 import torch.nn as nn
+import pandas as pd
 import matplotlib.pyplot as plt
 
-from scatcov.utils import to_numpy
+from scatcov.utils import to_numpy, df_merge
 from scatcov.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
 from scatcov.scattering_network.scale_indexer import ScaleIndexer, ScatteringShape
 from scatcov.scattering_network.layers_time import Wavelet
@@ -88,7 +88,7 @@ def infer_description(model, model_type, N, sc_idxer, A):
         """ Pandas cartesian product {(0,0), ..., (Nl-1, Nl-1))} x df """
         df_n = pd.DataFrame(np.stack([np.arange(Nl), np.arange(Nl)], 1), columns=['nl', 'nr'])
 
-        return df_n.merge(df, how='cross')
+        return df_merge(df_n, df)
 
     if model_type is None:  # description of scattering module
         ns = pd.DataFrame(np.arange(N), columns=['n'])
@@ -99,7 +99,7 @@ def infer_description(model, model_type, N, sc_idxer, A):
         low = pd.DataFrame([sc_idxer.is_low_pass(idx) for idx in sc_idxer.get_all_idx()], columns=['low'])
         sc_js = pd.concat([rs, sc, js, low], axis=1)
         a_s = pd.DataFrame(np.arange(A), columns=['al'])
-        df = ns.merge(sc_js.merge(a_s, how='cross'), how='cross')
+        df = df_merge(ns, sc_js, a_s)
 
     elif model_type == 'scat':
         ns = pd.DataFrame(np.arange(N), columns=['nl'])
@@ -109,7 +109,7 @@ def infer_description(model, model_type, N, sc_idxer, A):
         sc_js = pd.concat([sc, js], axis=1)
         a_s = pd.DataFrame(np.arange(A), columns=['al'])
         qs = pd.DataFrame(model.module_marginal.qs.detach().cpu().numpy(), columns=['q'])
-        df = ns.merge(sc_js.merge(a_s.merge(qs, how='cross'), how='cross'), how='cross')
+        df = df_merge(ns, sc_js, a_s, qs)
         df.replace(-1, np.nan, inplace=True)
         for o in range(1, sc_idxer.r_max):
             df[f'jl{o+1}'] = df[f'jl{o+1}'].astype('Int64')
@@ -202,7 +202,7 @@ def infer_description(model, model_type, N, sc_idxer, A):
         sc_js = pd.concat([sc, js], axis=1)
         a_s = pd.DataFrame(np.arange(A), columns=['al'])
         df_scat2_q1 = pd.DataFrame(columns=df_q2.columns)
-        df_scat2_q1[['nl', 'scl', 'jl1', 'j2', 'al']] = ns.merge(sc_js.merge(a_s, how='cross'), how='cross')
+        df_scat2_q1[['nl', 'scl', 'jl1', 'j2', 'al']] = df_merge(ns, sc_js, a_s)
         df_scat2_q1['q'] = 1.0
         df_scat2_q1.replace(-1, np.nan, inplace=True)
         for o in range(1, sc_idxer.r_max):
@@ -295,7 +295,6 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
                 repr = self.module_marginal(sxl).view(x.shape[0], -1, 1)
             elif self.model_type == 'cov':
                 m_q1 = self.module_q1(sxl)
-                # test = self.module_cov(sxl, sxr)
                 cov = self.module_cov(sxl, sxr).view(x.shape[0], -1, 1)
                 repr = torch.cat([m_q1, cov], 1)
             elif self.model_type == 'covreduced':
