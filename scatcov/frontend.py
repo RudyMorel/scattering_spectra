@@ -220,7 +220,7 @@ def infer_description(model, model_type, N, sc_idxer, A):
 
 
 def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_norm,
-               model_type, qs, sigma,
+               model_type, qs, sigma2,
                nchunks):
     """ Initialize a scattering covariance model.
 
@@ -234,8 +234,8 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param model_type: moments to compute on scattering, ex: None, 'scat', 'cov', 'covreduced', 'scat+cov'
-    :param qs: if moments == 'marginal' the exponents of the marginal moments
-    :param sigma: a tensor of size J, wavelet power spectrum to normalize the representation with
+    :param qs: if model_type == 'marginal' the exponents of the scattering marginal moments
+    :param sigma2: a tensor of size J, wavelet power spectrum to normalize the representation with
     :param nchunks: the number of chunks
 
     :return: a torch module
@@ -254,8 +254,8 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
     W2 = Wavelet(T, J, Q2, wav_type2, high_freq, wav_norm, 2, sc_idxer)
 
     # normalization layer
-    if model_type == 'covreduced' or sigma is not None:
-        N_layer = NormalizationLayer(2, sigma.pow(0.5))
+    if model_type == 'covreduced' or sigma2 is not None:
+        N_layer = NormalizationLayer(2, sigma2.pow(0.5))
     else:
         N_layer = nn.Identity()
 
@@ -326,10 +326,7 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
             return self.description.where(**kwargs).sum()
 
         def forward(self, x):
-            Rx = DescribedTensor(x=None, y=self.module(x), descri=self.description)
-            if self.model_type is None:
-                return Rx
-            return Rx.mean_batch()
+            return DescribedTensor(x=None, y=self.module(x), descri=self.description)
 
     model = Model(model_type, scat_l, None)
     description = infer_description(model, model_type, N, sc_idxer, 1)
@@ -339,24 +336,24 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
     return model
 
 
-def compute_sigma(x, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
+def compute_sigma2(x, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
     marginal_model = init_model(B=x.shape[0], N=x.shape[1], T=x.shape[-1], J=J, Q1=Q1, Q2=Q2, r_max=1,
                                 wav_type1=wav_type, wav_type2=wav_type, high_freq=high_freq, wav_norm=wav_norm,
-                                model_type='scat', qs=[2.0], sigma=None,
+                                model_type='scat', qs=[2.0], sigma2=None,
                                 nchunks=1)
     if cuda:
         x = x.cuda()
         marginal_model = marginal_model.cuda()
 
-    sigma = marginal_model(x).y.reshape(x.shape[1], -1)  # N x J
+    sigma2 = marginal_model(x).y.reshape(x.shape[0], x.shape[1], -1)  # B x N x J
 
-    return sigma
+    return sigma2
 
 
 def analyze(x, J=None, Q1=1, Q2=1,
             wav_type1='battle_lemarie', wav_type2='battle_lemarie', wav_norm='l1', high_freq=0.425,
-            model_type='cov', qs=None, normalize=False, nchunks=1, cuda=False):
+            model_type='cov', qs=None, normalize=None, nchunks=1, cuda=False):
     """ Compute scattering based model.
 
     :param x: an array of shape (T, ) or (B, T) or (B, N, T)
@@ -368,7 +365,11 @@ def analyze(x, J=None, Q1=1, Q2=1,
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param model_type: moments to compute on scattering, ex: None, 'scat', 'cov', 'covreduced', 'scat+cov'
-    :param normalize: normalize scattering covariance by power spectrum and but keep power spectrum
+    :param normalize:
+        None: no normalization,
+        "each": normalize Rx.y[b,:,:] by its power spectrum
+        "global": normalize RX.y[b,:,:] by the average power spectrum over all trajectories b in the batch
+        "keep_ps": same as "each" but keep the power spectrum ("each" would put it to 1.0)
     :param qs: exponent to use in a marginal model
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param cuda: does calculation on gpu
@@ -380,6 +381,11 @@ def analyze(x, J=None, Q1=1, Q2=1,
     elif len(x.shape) == 2:  # assumes that x is of shape (B, T)
         x = x[:, None, :]
 
+    if model_type is None:
+        normalize = None
+    if model_type == 'covreduced':
+        normalize = 'global'
+
     B, N, T = x.shape
     x = torch.tensor(x)[:, :, None, None, :]
 
@@ -387,14 +393,16 @@ def analyze(x, J=None, Q1=1, Q2=1,
         J = int(np.log2(T)) - 3
 
     # covreduced needs a spectrum normalization
-    sigma = None
-    if normalize or model_type == 'covreduced':
-        sigma = compute_sigma(x, J, Q1, Q2, wav_type1, high_freq, wav_norm, cuda)
+    sigma2 = None
+    if normalize is not None:
+        sigma2 = compute_sigma2(x, J, Q1, Q2, wav_type1, high_freq, wav_norm, cuda)
+        if normalize == "global":
+            sigma2 = sigma2.mean(0, keepdim=True)
 
     # initialize model
     model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2,
                        wav_type1=wav_type1, wav_type2=wav_type2, high_freq=high_freq, wav_norm=wav_norm,
-                       model_type=model_type, qs=qs, sigma=sigma,
+                       model_type=model_type, qs=qs, sigma2=sigma2,
                        nchunks=nchunks)
 
     # compute
@@ -404,17 +412,10 @@ def analyze(x, J=None, Q1=1, Q2=1,
 
     Rx = model(x)
 
-    if normalize and 'cov' in model_type:
+    if normalize == "keep_ps":
         # retrieve the power spectrum that was normalized to 1.0
-        sigma = compute_sigma(x, B, Q1, Q2, wav_type1, high_freq, wav_norm, cuda) if sigma is None else sigma
         mask_ps = Rx.descri.where(c_type='ps')
-        Rx.y.real[:, mask_ps, :] = sigma.reshape(1, -1, 1)
-
-        # normalize E{X*phi_J} and E{|X*phi_J|^2} by E{X^2}
-        energy = x[:, :, 0, 0, :].pow(2.0).mean((0, -1))  # N
-        mask_low_pass = Rx.descri.where(low=True, c_type=['mean', 'spars', 'ps'])
-        normalized = Rx.y.real[:, mask_low_pass, :].reshape(1, x.shape[1], -1, 1) / energy.pow(0.5)[None, :, None, None]
-        Rx.y.real[:, mask_low_pass, :] /= normalized.reshape(1, -1, 1)
+        Rx.y.real[:, mask_ps, :] = sigma2.reshape(B, -1, 1)
 
     return Rx.cpu().sort()
 
@@ -452,11 +453,11 @@ class GenDataLoader(ProcessDataLoader):
         x_torch = torch.tensor(x).unsqueeze(-2).unsqueeze(-2)
 
         # sigma = None
-        sigma = compute_sigma(x_torch, model_params['J'],
-                              model_params['Q1'], model_params['Q2'],
-                              model_params['wav_type1'], model_params['high_freq'], model_params['wav_norm'],
-                              optim_params['cuda'])
-        model_params['sigma'] = sigma
+        sigma2 = compute_sigma2(x_torch, model_params['J'],
+                                model_params['Q1'], model_params['Q2'],
+                                model_params['wav_type1'], model_params['high_freq'], model_params['wav_norm'],
+                                optim_params['cuda'])
+        model_params['sigma2'] = sigma2.mean(0, keepdim=True)
 
         # prepare target representation
         if Rx is None:
@@ -602,7 +603,7 @@ def generate(x, Rx=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav
         'wav_type1': wav_type,  'wav_type2': wav_type,  # 'battle_lemarie' 'morlet' 'shannon'
         'high_freq': high_freq,  # 0.323645 or 0.425
         'wav_norm': wav_norm,
-        'model_type': model_type, 'qs': qs, 'sigma': None,
+        'model_type': model_type, 'qs': qs, 'sigma2': None,
         'nchunks': nchunks
     }
 
@@ -785,11 +786,12 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
 
         B = Rx.y.shape[0]
 
-        sigma = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0, keepdim=True)[:, :, 0]
+        sigma2 = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0, keepdim=True)[:, :, 0]
 
         for a in range(1, J):
             if model_type == 'covreduced':
                 c_mwm_n = Rx.select(c_type='phaseenv', a=a, low=False)
+                assert c_mwm_n.shape[1] == 1, f"ERROR. Should be selecting 1 coefficient but got {c_mwm_n.shape[1]}"
                 c_mwm_n = c_mwm_n[:, 0, 0]
 
                 c_wmw[i_lb, a-1] = c_mwm_n.mean(0)
@@ -799,7 +801,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
                 for j1 in range(a, J):
                     coeff = Rx.select(c_type='phaseenv', jl1=j1, jr1=j1-a, low=False)
                     coeff = coeff[:, 0, 0]
-                    coeff /= sigma[:, j1, ...].pow(0.5) * sigma[:, j1-a, ...].pow(0.5)
+                    coeff /= sigma2[:, j1, ...].pow(0.5) * sigma2[:, j1-a, ...].pow(0.5)
                     c_mwm_nj[:, j1-a] = coeff
 
                 # the mean in j of the variance of time estimators
@@ -927,7 +929,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
 
         B = Rx.y.shape[0]
 
-        sigma = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0, keepdim=True)[:, :, 0]
+        sigma2 = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0, keepdim=True)[:, :, 0]
 
         for (a, b) in product(range(J-1), range(-J+1, 0)):
             if a - b >= J:
@@ -939,7 +941,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
                 for j1 in range(a, J+b):
                     coeff = Rx.select(c_type='envelope', jl1=j1, jr1=j1-a, j2=j1-b, low=False)
                     coeff = coeff[:, 0, 0]
-                    coeff /= sigma[:, j1, ...].pow(0.5) * sigma[:, j1 - a, ...].pow(0.5)
+                    coeff /= sigma2[:, j1, ...].pow(0.5) * sigma2[:, j1 - a, ...].pow(0.5)
                     cs_nj[:, j1 - a] = coeff
 
                 cs_j = cs_nj.mean(0)
