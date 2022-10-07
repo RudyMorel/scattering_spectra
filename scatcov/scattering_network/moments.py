@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from scatcov.utils import df_merge
 from scatcov.scattering_network.scale_indexer import ScaleIndexer, ScatteringShape
 from scatcov.scattering_network.described_tensor import Description
 
@@ -42,12 +43,7 @@ class AvgLowPass(nn.Module):
         df_j = pd.DataFrame([sc_idxer.JQ(r=1)] + list(range(sc_idxer.JQ(r=1))), columns=['j'])
         df_a = pd.DataFrame(np.arange(A), columns=['a'])
 
-        df = (
-            df_n
-            .merge(df_j, how='cross')
-            .merge(df_a, how='cross')
-        )
-        return df
+        return df_merge(df_n, df_j, df_a)
 
     def forward(self, x: torch.tensor) -> torch.tensor:
         """ Computes E[x x^T].
