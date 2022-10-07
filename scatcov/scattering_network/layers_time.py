@@ -1,10 +1,20 @@
 """ Implements layers that operate on time. """
+from packaging import version
 import numpy as np
 import torch
 import torch.nn as nn
 
 from scatcov.scattering_network.filter_bank import init_band_pass, init_low_pass
 from scatcov.scattering_network.scale_indexer import ScaleIndexer
+
+
+# Fourier and torch compatibility
+if version.parse(torch.__version__) >= version.parse('1.8'):
+    fft = lambda x: torch.fft.fft(x)
+    ifft = lambda x: torch.fft.ifft(x)
+else:
+    fft = lambda x: torch.view_as_complex(torch.fft(torch.view_as_real(x), 1, normalized=False))
+    ifft = lambda x: torch.view_as_complex(torch.ifft(torch.view_as_real(x), 1, normalized=False))
 
 
 class Pad1d(nn.Module):
@@ -72,8 +82,8 @@ class Wavelet(nn.Module):
 
         # since idx[:,0] is always lower than x_pad.shape[2], doing fft in second is always optimal
         x_pad = self.Pad.pad(x)
-        x_hat = torch.fft.fft(x_pad)
+        x_hat = fft(x_pad)
         x_filt_hat = x_hat[..., pairing[:, 0], :, :] * self.filt_hat[pairing[:, 1], :].unsqueeze(-2)
-        x_filt = self.Pad.unpad(torch.fft.ifft(x_filt_hat))
+        x_filt = self.Pad.unpad(ifft(x_filt_hat))
 
         return x_filt
