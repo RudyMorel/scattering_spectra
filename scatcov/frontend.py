@@ -220,7 +220,7 @@ def infer_description(model, model_type, N, sc_idxer, A):
 
 
 def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_norm,
-               model_type, qs, sigma2,
+               model_type, qs, sigma2, norm_on_the_fly,
                nchunks):
     """ Initialize a scattering covariance model.
 
@@ -236,6 +236,8 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
     :param model_type: moments to compute on scattering, ex: None, 'scat', 'cov', 'covreduced', 'scat+cov'
     :param qs: if model_type == 'marginal' the exponents of the scattering marginal moments
     :param sigma2: a tensor of size J, wavelet power spectrum to normalize the representation with
+    :param norm_on_the_fly: normalize first wavelet layer on the fly
+    :param keep_past: keep all layers in the output of the model
     :param nchunks: the number of chunks
 
     :return: a torch module
@@ -254,8 +256,10 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
     W2 = Wavelet(T, J, Q2, wav_type2, high_freq, wav_norm, 2, sc_idxer)
 
     # normalization layer
-    if model_type == 'covreduced' or sigma2 is not None:
-        N_layer = NormalizationLayer(2, sigma2.pow(0.5))
+    if norm_on_the_fly:
+        N_layer = NormalizationLayer(2, None, True)
+    elif model_type == 'covreduced' or sigma2 is not None:
+        N_layer = NormalizationLayer(2, sigma2.pow(0.5), False)
     else:
         N_layer = nn.Identity()
 
@@ -339,7 +343,7 @@ def compute_sigma2(x, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
     marginal_model = init_model(B=x.shape[0], N=x.shape[1], T=x.shape[-1], J=J, Q1=Q1, Q2=Q2, r_max=1,
                                 wav_type1=wav_type, wav_type2=wav_type, high_freq=high_freq, wav_norm=wav_norm,
-                                model_type='scat', qs=[2.0], sigma2=None,
+                                model_type='scat', qs=[2.0], sigma2=None, norm_on_the_fly=False,
                                 nchunks=1)
     if cuda:
         x = x.cuda()
@@ -363,27 +367,33 @@ def analyze(x, J=None, Q1=1, Q2=1,
     :param wav_type2: wavelet type for the second layer
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
-    :param model_type: moments to compute on scattering, ex: None, 'scat', 'cov', 'covreduced', 'scat+cov'
+    :param model_type: moments to compute on scattering
+        None: compute Sx = W|Wx|(t,j1,j2) and keep time axis t
+        "scat": compute marginal moments on Sx: E{|Sx|^q} by time average
+        "cov": compute covariance on Sx: Cov{Sx, Sx} as well as E{|Wx|} and E{|Wx|^2} by time average
+        "covreduced": compute reduced covariance: P Cov{Sx, Sx}, where P is the self-similar projection
+        "scat+cov": both scat and cov
     :param normalize:
         None: no normalization,
-        "each": normalize Rx.y[b,:,:] by its power spectrum
-        "global": normalize RX.y[b,:,:] by the average power spectrum over all trajectories b in the batch
-        "keep_ps": same as "each" but keep the power spectrum ("each" would put it to 1.0)
+        "each_ps": normalize Rx.y[b,:,:] by its power spectrum
+        "batch_ps": normalize RX.y[b,:,:] by the average power spectrum over all trajectories b in the batch
     :param qs: exponent to use in a marginal model
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param cuda: does calculation on gpu
 
     :return: a DescribedTensor result
     """
+    if normalize not in [None, "each_ps", "batch_ps"]:
+        raise ValueError("Unrecognized normalization.")
+    if model_type == 'covreduced' and normalize is None:
+        raise ValueError("For covreduced model, user should provide a normalize argument.")
+    if model_type is None and normalize is not None:
+        raise ValueError("Can't use normalization with model_type=None.")
+
     if len(x.shape) == 1:  # assumes that x is of shape (T, )
         x = x[None, None, :]
     elif len(x.shape) == 2:  # assumes that x is of shape (B, T)
         x = x[:, None, :]
-
-    if model_type is None:
-        normalize = None
-    if model_type == 'covreduced':
-        normalize = 'global'
 
     B, N, T = x.shape
     x = torch.tensor(x)[:, :, None, None, :]
@@ -395,13 +405,13 @@ def analyze(x, J=None, Q1=1, Q2=1,
     sigma2 = None
     if normalize is not None:
         sigma2 = compute_sigma2(x, J, Q1, Q2, wav_type1, high_freq, wav_norm, cuda)
-        if normalize == "global":
+        if normalize == "batch_ps":
             sigma2 = sigma2.mean(0, keepdim=True)
 
     # initialize model
     model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2,
                        wav_type1=wav_type1, wav_type2=wav_type2, high_freq=high_freq, wav_norm=wav_norm,
-                       model_type=model_type, qs=qs, sigma2=sigma2,
+                       model_type=model_type, qs=qs, sigma2=sigma2, norm_on_the_fly=normalize=="each_ps",
                        nchunks=nchunks)
 
     # compute
@@ -411,10 +421,11 @@ def analyze(x, J=None, Q1=1, Q2=1,
 
     Rx = model(x)
 
-    if normalize == "keep_ps":
-        # retrieve the power spectrum that was normalized to 1.0
+    if normalize is not None:
+        # retrieve the power spectrum that was normalized
         mask_ps = Rx.descri.where(c_type='ps')
-        Rx.y.real[:, mask_ps, :] = sigma2.reshape(B, -1, 1)
+        if mask_ps.sum() != 0:
+            Rx.y.real[:, mask_ps, :] = sigma2.reshape(sigma2.shape[0], -1, 1)
 
     return Rx.cpu().sort()
 
@@ -602,8 +613,8 @@ def generate(x, Rx=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav
         'wav_type1': wav_type,  'wav_type2': wav_type,  # 'battle_lemarie' 'morlet' 'shannon'
         'high_freq': high_freq,  # 0.323645 or 0.425
         'wav_norm': wav_norm,
-        'model_type': model_type, 'qs': qs, 'sigma2': None,
-        'nchunks': nchunks
+        'model_type': model_type, 'qs': qs, 'sigma2': None, 'norm_on_the_fly': False,
+        'nchunks': nchunks,
     }
 
     # OPTIM params

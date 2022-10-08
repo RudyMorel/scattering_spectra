@@ -5,13 +5,17 @@ import torch.nn as nn
 
 
 class NormalizationLayer(nn.Module):
-    def __init__(self, dim: int, sigma: torch.tensor):
+    def __init__(self, dim: int, sigma2: torch.tensor, on_the_fly: bool):
         super(NormalizationLayer, self).__init__()
         self.dim = dim
-        self.sigma = sigma
+        self.sigma2 = sigma2
+        self.on_the_fly = on_the_fly
 
     def forward(self, x: torch.tensor) -> torch.tensor:
-        return x / self.sigma[(..., *(None,) * (x.ndim - 1 - self.dim))]
+        if self.on_the_fly:  # normalize on the fly
+            sigma2 = torch.abs(x).pow(2.0).mean(-1, keepdim=True)
+            return x / sigma2.pow(0.5)
+        return x / self.sigma2[(..., *(None,) * (x.ndim - 1 - self.dim))]
 
 
 class SkipConnection(nn.Module):
