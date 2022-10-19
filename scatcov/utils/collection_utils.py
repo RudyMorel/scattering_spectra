@@ -95,7 +95,21 @@ def split_equal_sum(li: List[int], r: int) -> Tuple[List[List[int]], List[List[i
     return list(subindices.values()), list(sublists.values())
 
 
-def df_merge(*dfs):
+def df_product(*dfs: pd.DataFrame) -> pd.DataFrame:
     for df in dfs:
         df['key'] = 1
     return reduce(lambda l, r: pd.merge(l, r, on='key'), dfs).drop(columns='key')
+
+
+def df_product_channel_single(df: pd.DataFrame, N: int, method: str) -> pd.DataFrame:
+    """ Pandas cartesian product {(0,0), ..., (0, Nl-1))} x df """
+    if method == "same":
+        df_n = pd.DataFrame(np.stack([np.arange(N), np.arange(N)], 1), columns=['nl', 'nr'])
+    elif method == "zero_left":
+        df_n = pd.DataFrame(np.stack([np.zeros(N, dtype=np.int32), np.arange(N)], 1), columns=['nl', 'nr'])
+    elif method == "zero_right":
+        df_n = pd.DataFrame(np.stack([np.arange(N), np.zeros(N, dtype=np.int32)], 1), columns=['nl', 'nr'])
+    else:
+        raise ValueError("Unrecognized channel product method.")
+
+    return df_product(df_n, df)

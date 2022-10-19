@@ -10,7 +10,7 @@ from torch.autograd import Variable, grad
 from scatcov.scattering_network.described_tensor import DescribedTensor
 
 
-def compute_w_l2(weights, model, w_gap, nchunks):
+def compute_w_l2(weights: Dict, model: nn.Module, w_gap: Dict, nchunks: int) -> List[torch.tensor]:
     # normalize by the number of coeffs at each order
     # weights = {c_type: 1 / (scat * nbs[c_type]) for c_type in R.moment_types}
     # # weights = {c_type: 1.0 for c_type in moments.moment_types}
@@ -35,10 +35,11 @@ def compute_w_l2(weights, model, w_gap, nchunks):
 
 class Solver(nn.Module):
     """ A class that contains all information necessary for generation. """
-    def __init__(self, model: nn.Module, loss: nn.Module,
+    def __init__(self,
+                 model: nn.Module, loss: nn.Module,
                  xf: Optional[np.ndarray] = None, Rxf: Optional[DescribedTensor] = None,
-                 x0: Optional[np.ndarray] = None,
-                 weights: Optional[Dict[str, float]] = None, cuda: bool = False, relative_optim: bool = False):
+                 cuda: bool = False,
+                 x0: Optional[np.ndarray] = None) -> None:
         super(Solver, self).__init__()
 
         self.model = model
@@ -65,7 +66,7 @@ class Solver(nn.Module):
         Rx0_chunk = self.model(self.format(x0, requires_grad=False))
         self.loss0 = self.loss(Rx0_chunk, self.Rxf, None, None).detach().cpu().numpy()
 
-    def format(self, x: np.ndarray, requires_grad=True):
+    def format(self, x: np.ndarray, requires_grad: Optional[bool] = True) -> torch.tensor:
         """ Transforms x into a compatible format for the embedding. """
         x = torch.DoubleTensor(x.reshape(self.x0.shape)).unsqueeze(-2).unsqueeze(-2)
         if self.is_cuda:
@@ -73,13 +74,14 @@ class Solver(nn.Module):
         x = Variable(x, requires_grad=requires_grad)
         return x
 
-    def joint(self, x: np.ndarray):
+    def joint(self, x: np.ndarray) -> Tuple[torch.tensor, torch.tensor]:
         """ Computes the loss on current vector. """
 
         # format x and set gradient to 0
         x_torch = self.format(x)
 
-        res_max = {c_type: 0.0 for c_type in self.model.c_types}
+        res_max = {c_type: 0.0 for c_type in self.model.module.c_types}
+        res_max_pct = {c_type: 0.0 for c_type in self.model.module.c_types}
 
         # clear gradient
         if x_torch.grad is not None:
@@ -93,7 +95,9 @@ class Solver(nn.Module):
         # self.time_tracker.start('loss')
         loss = self.loss(Rxt, self.Rxf, None, None)
         res_max = {c_type: max(res_max[c_type], self.loss.max_gap[c_type] if c_type in self.loss.max_gap else 0.0)
-                   for c_type in self.model.c_types}
+                   for c_type in self.model.module.c_types}
+        res_max_pct = {c_type: max(res_max_pct[c_type], self.loss.max_gap_pct[c_type] if c_type in self.loss.max_gap_pct else 0.0)
+                       for c_type in self.model.module.c_types}
 
         # compute gradient
         # self.time_tracker.start('backward')
@@ -104,7 +108,7 @@ class Solver(nn.Module):
         grad_x = grad_x.contiguous().detach().cpu().numpy()
         loss = loss.detach().cpu().numpy()
 
-        self.res = loss, grad_x.ravel(), res_max
+        self.res = loss, grad_x.ravel(), res_max, res_max_pct
 
         return loss, grad_x.ravel()
 
@@ -115,8 +119,11 @@ class SmallEnoughException(Exception):
 
 class CheckConvCriterion:
     """ A callback function given to the optimizer. """
-    def __init__(self, solver: Solver, tol: float,
-                 max_wait: Optional[int] = 1000, save_data_evolution_p: Optional[bool] = False):
+    def __init__(self,
+                 solver: Solver,
+                 tol: float,
+                 max_wait: Optional[int] = 1000,
+                 save_data_evolution_p: Optional[bool] = False):
         self.solver = solver
         self.tol = tol
         self.result = None
@@ -136,12 +143,14 @@ class CheckConvCriterion:
 
         self.curr_xk = solver.xf
 
-    def __call__(self, xk: np.ndarray):
-        err, grad_xk, max_gap = self.solver.res
+    def __call__(self, xk: np.ndarray) -> None:
+        err, grad_xk, max_gap, max_gap_pct = self.solver.res
+
         gerr = np.max(np.abs(grad_xk))
         err, gerr = float(err), float(gerr)
         self.err = err
         self.max_gap = max_gap
+        self.max_gap_pct = max_gap_pct
         self.gerr = gerr
         self.counter += 1
 
@@ -169,20 +178,26 @@ class CheckConvCriterion:
         else:
             self.wait += 1
 
-    def print_info_line(self, msg: Optional[str] = ''):
+    def print_info_line(self, msg: Optional[str] = '') -> None:
         delta_t = time() - self.tic
+
+        def cap(pct):
+            return pct if pct < 1e3 else np.inf
+
         print(colored(
             f"{self.counter:6}it in {self.hms_string(delta_t)} ( {self.counter / delta_t:.2f}it/s )"
-            + " ........ "
-            + f"{np.sqrt(self.err):.2E} -- {max(self.max_gap.values()):.2E} -- {self.gerr:.2E}",
+            + " .... "
+            + f"err {np.sqrt(self.err):.2E} -- max {max(self.max_gap.values()):.2E}"
+            + f" -- maxpct {cap(max(self.max_gap_pct.values())):.3%} -- gerr {self.gerr:.2E}",
             'cyan'))
         print(colored(
-            "".join([f"\n ----- {c_type} {value:.2e}, " for c_type, value in self.max_gap.items()])
+            "".join([f"\n -- {c_type} max {value:.2e} -- maxpct {cap(self.max_gap_pct[c_type]):.3%}, "
+                     for c_type, value in self.max_gap.items()])
             + msg,
             'green'))
 
     @staticmethod
-    def hms_string(sec_elapsed: float):
+    def hms_string(sec_elapsed: float) -> str:
         """ Format  """
         h = int(sec_elapsed / (60 * 60))
         m = int((sec_elapsed % (60 * 60)) / 60)

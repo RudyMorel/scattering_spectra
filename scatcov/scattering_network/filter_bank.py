@@ -125,7 +125,7 @@ def periodize_filter_fourier(h_f, nperiods=1):
     ----------
     h_f : array_like
         complex numpy array of shape (N*n_periods,)
-    n_periods: int, optional
+    nperiods: int, optional
         Number of periods which should be used to periodize
 
     Returns
@@ -147,7 +147,7 @@ def get_normalizing_factor(h_f, normalize='l1'):
     ----------
     h_f : array_like
         numpy vector containing the Fourier transform of a filter
-    normalized : string, optional
+    normalize : string, optional
         desired normalization type, either 'l1' or 'l2'. Defaults to 'l1'.
 
     Returns

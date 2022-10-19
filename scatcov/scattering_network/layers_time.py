@@ -15,18 +15,18 @@ if version.parse(torch.__version__) >= version.parse('1.8'):
 else:
     def fft(x):
         if torch.is_floating_point(x):
-            x = x.type(torch.complex128)
+            x = torch.complex(x, torch.zeros_like(x))
         return torch.view_as_complex(torch.fft(torch.view_as_real(x), 1, normalized=False))
 
     def ifft(x):
         if torch.is_floating_point(x):
-            x = x.type(torch.complex128)
+            x = torch.complex(x, torch.zeros_like(x))
         return torch.view_as_complex(torch.ifft(torch.view_as_real(x), 1, normalized=False))
 
 
 class Pad1d(nn.Module):
     """ Padding base class. """
-    def __init__(self, T):
+    def __init__(self, T: int) -> None:
         super(Pad1d, self).__init__()
         self.T = T
 
@@ -52,8 +52,9 @@ class ReflectionPad(Pad1d):
 class Wavelet(nn.Module):
     """ Wavelet convolutional operator. """
     def __init__(self, T: int, J: int, Q: int,
-                 wav_type: str, high_freq: float, wav_norm: str,
-                 layer_r: int, sc_idxer: ScaleIndexer):
+                 wav_type: str, wav_norm: str, high_freq: float,
+                 layer_r: int,
+                 sc_idxer: ScaleIndexer):
         super(Wavelet, self).__init__()
         self.T, self.J, self.Q, self.layer_r = 2 * T, J, Q, layer_r
         self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
@@ -61,7 +62,7 @@ class Wavelet(nn.Module):
 
         psi_hat = init_band_pass(wav_type, self.T, J, Q, high_freq, wav_norm)
         phi_hat = init_low_pass(wav_type, self.T, J, Q, high_freq)
-        filt_hat = torch.tensor(np.concatenate([psi_hat, phi_hat[None, :]]))
+        filt_hat = torch.tensor(np.concatenate([psi_hat, phi_hat[None, :]]), dtype=torch.float32)
         self.filt_hat = nn.Parameter(filt_hat, requires_grad=False)
 
         self.Pad = ReflectionPad(T)
@@ -71,10 +72,10 @@ class Wavelet(nn.Module):
     def get_pairing(self):
         """ Initialize pairing to avoid computing negligable convolutions. """
         # r = 1
-        pairing_1 = np.array([(0, j) for j in self.sc_idxer.p_idx[0][:, 0]])
+        pairing_1 = np.array([(0, j) for j in self.sc_idxer.sc_paths[0][:, 0]])
 
         # r = 2
-        pairing_2 = self.sc_idxer.p_idx[1]
+        pairing_2 = self.sc_idxer.sc_paths[1]
 
         return [pairing_1, pairing_2]
 

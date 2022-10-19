@@ -11,12 +11,12 @@ import torch.nn as nn
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from scatcov.utils import to_numpy, df_merge
+from scatcov.utils import to_numpy, df_product, df_product_channel_single
 from scatcov.data_source import ProcessDataLoader, FBmLoader, PoissonLoader, MRWLoader, SMRWLoader
-from scatcov.scattering_network.scale_indexer import ScaleIndexer, ScatteringShape
+from scatcov.scattering_network.scale_indexer import ScaleIndexer
 from scatcov.scattering_network.layers_time import Wavelet
-from scatcov.scattering_network.moments import ScatCoefficients, AvgLowPass, Cov, CovScaleInvariant
-from scatcov.scattering_network.layers_basics import ChunkedModule, SkipConnection, Modulus, NormalizationLayer
+from scatcov.scattering_network.moments_layers import ScatCoefficients, AvgLowPass, Cov, CovScaleInvariant
+from scatcov.scattering_network.layers_basics import ChunkedModule, NormalizationLayer
 from scatcov.scattering_network.described_tensor import Description, DescribedTensor
 from scatcov.scattering_network.loss import MSELossScat
 from scatcov.scattering_network.solver import Solver, CheckConvCriterion, SmallEnoughException
@@ -24,7 +24,7 @@ from scatcov.scattering_network.solver import Solver, CheckConvCriterion, SmallE
 """ Notations
 
 Dimension sizes:
-- B: number of batches 
+- B: batch size
 - R: number of realizations (used to estimate scattering covariance)
 - N: number of data channels (N>1 : multivariate process)
 - T: number of data samples (time samples)
@@ -34,7 +34,9 @@ Dimension sizes:
 
 Tensor shapes:
 - x: input, of shape  (B, N, T)
-- Rx: output (DescribedTensor), of shape (B, K, T, 2) with K the number of coefficients in the representation
+- Rx: output (DescribedTensor), 
+    - y: tensor of shape (B, K, T) with K the number of coefficients in the representation
+    - descri: pandas DataFrame of shape K x nb_attributes used, description of the output tensor y
 """
 
 
@@ -81,147 +83,286 @@ def load_data(process_name, R, T, cache_dir=None, **data_param):
 # ANALYSIS
 ##################
 
-def infer_description(model, model_type, N, sc_idxer, A):
-    """ From a model get a dataframe that describes its output. """
 
-    def pd_product_channel_single(df, Nl):
-        """ Pandas cartesian product {(0,0), ..., (Nl-1, Nl-1))} x df """
-        df_n = pd.DataFrame(np.stack([np.arange(Nl), np.arange(Nl)], 1), columns=['nl', 'nr'])
+# MODEL class for ANALYSIS and GENERATION
+class Model(nn.Module):
+    def __init__(self, model_type, qs, c_types,
+                 T, J, Qs, r_max, wav_types, high_freq, wav_norm,
+                 N,
+                 sigma2, norm_on_the_fly,
+                 cov_chunk,
+                 dtype):
+        super(Model, self).__init__()
+        self.model_type = model_type
+        self.sc_idxer = ScaleIndexer(J=J, Qs=Qs, r_max=2)
+        self.r_max = r_max
 
-        return df_merge(df_n, df)
+        # time layers
+        self.W1 = Wavelet(T, J, Qs[0], wav_types[0], wav_norm, high_freq, 1, self.sc_idxer)
+        self.W2 = Wavelet(T, J, Qs[1], wav_types[1], wav_norm, high_freq, 2, self.sc_idxer)
 
-    if model_type is None:  # description of scattering module
-        ns = pd.DataFrame(np.arange(N), columns=['n'])
-        sc = pd.DataFrame(sc_idxer.get_all_idx(), columns=['sc'])
-        js = pd.DataFrame(np.array([sc_idxer.idx_to_path(idx, squeeze=False) for idx in sc_idxer.get_all_idx()]),
-                          columns=[f'j{o+1}' for o in range(sc_idxer.r_max)])
-        rs = pd.DataFrame([sc_idxer.r(idx) for idx in sc_idxer.get_all_idx()], columns=['r'])
-        low = pd.DataFrame([sc_idxer.is_low_pass(idx) for idx in sc_idxer.get_all_idx()], columns=['low'])
-        sc_js = pd.concat([rs, sc, js, low], axis=1)
-        a_s = pd.DataFrame(np.arange(A), columns=['al'])
-        df = df_merge(ns, sc_js, a_s)
+        # normalization layer
+        if norm_on_the_fly:
+            self.norm_layer = NormalizationLayer(2, None, True)
+        elif model_type == 'covreduced' or sigma2 is not None:
+            self.norm_layer = NormalizationLayer(2, sigma2.pow(0.5), False)
+        else:
+            self.norm_layer = nn.Identity()
 
-    elif model_type == 'scat':
-        ns = pd.DataFrame(np.arange(N), columns=['nl'])
-        sc = pd.DataFrame(sc_idxer.get_all_idx(), columns=['scl'])
-        js = pd.DataFrame(np.array([sc_idxer.idx_to_path(idx, squeeze=False) for idx in sc_idxer.get_all_idx()]),
-                          columns=[f'jl{o+1}' for o in range(sc_idxer.r_max)])
-        sc_js = pd.concat([sc, js], axis=1)
-        a_s = pd.DataFrame(np.arange(A), columns=['al'])
-        qs = pd.DataFrame(model.module_marginal.qs.detach().cpu().numpy(), columns=['q'])
-        df = df_merge(ns, sc_js, a_s, qs)
-        df.replace(-1, np.nan, inplace=True)
-        for o in range(1, sc_idxer.r_max):
-            df[f'jl{o+1}'] = df[f'jl{o+1}'].astype('Int64')
-        df['rl'] = [sc_idxer.r(sc) for sc in df['scl']]
-        df['low'] = [sc_idxer.is_low_pass(sc) for sc in df['scl']]
-        df['c_type'] = 'marginal'
-        df = df.reindex(columns=['nl', 'rl', 'scl', 'jl1', 'j2', 'al', 'q', 'low', 'c_type'])
+        # channel transforms
+        self.N = N
 
-    elif model_type == 'cov':
-        # Cov{Sx,Sx}
-        df_q2 = model.module_cov.df_scale
-        df_q2 = pd_product_channel_single(df_q2, N)
+        # marginal moments
+        self.module_scat = ScatCoefficients(qs=qs or [1.0, 2.0])
+        self.module_scat_q1 = ScatCoefficients(qs=[1.0])
+        self.module_q1_r1 = AvgLowPass(1, self.sc_idxer)
+        self.module_q1_r2 = AvgLowPass(2, self.sc_idxer)
 
-        # E{Sx}
-        df_q1 = pd.DataFrame(columns=df_q2.columns)
-        df_q1_orig = model.module_q1.df
-        df_q1['scl'] = df_q1['scr'] = [sc_idxer.path_to_idx([j]) for j in df_q1_orig['j']]
-        df_q1['rl'] = df_q1['rr'] = df_q1['q'] = 1
-        df_q1['re'] = True
-        df_q1['low'] = [sc_idxer.is_low_pass(sc) for sc in df_q1['scl']]
-        df_q1['nr'] = df_q1['nl'] = df_q1_orig['n']
-        df_q1['jr1'] = df_q1['jl1'] = df_q1_orig['j']
-        df_q1['ar'] = df_q1['al'] = df_q1_orig['a']
-        df_q1['j2'] = np.nan
-        df_q1['j2'] = df_q1['j2'].astype('Int64')
-        df_q1.loc[(df_q1.q == 1) & df_q1.low, ['c_type']] = 'mean'  # mean
-        df_q1.loc[df_q1.q == 2, ['c_type']] = 'ps'  # power spectrum
-        df_q1.loc[(df_q1.q == 1) & ~df_q1.low, ['c_type']] = 'spars'
-        df = pd.concat([df_q1, df_q2])
+        # correlation moments
+        self.module_cov_w = Cov(1, 1, self.sc_idxer, 1)
+        self.module_cov_wmw = Cov(1, 2, self.sc_idxer, 1)
+        self.module_cov_mw = Cov(2, 2, self.sc_idxer, cov_chunk)
+        self.df_cov = Description(self.build_description_correlation(1, self.sc_idxer))
+        self.module_covinv = CovScaleInvariant(self.sc_idxer, self.df_cov) if model_type == "covreduced" else None
 
-    elif model_type == 'covreduced':
-        # Cov{Sx,Sx} non invariant to scaling
-        df_q2_orig = model.module_cov.df_scale.iloc[model.mask_noninv, :]
-        df_q2 = df_q2_orig.copy()
-        df_q2['a'] = df_q2_orig['jl1'] - df_q2_orig['jr1']
-        df_q2['j'] = df_q2_orig['jl1']
-        df_q2['b'] = pd.NA
-        df_q2 = df_q2.drop(columns=['scl', 'scr', 'jl1', 'jr1', 'j2'])
-        df_q2 = pd_product_channel_single(df_q2, N)
-        # df_q2['j'] = pd.NA
-        df_q2 = df_q2.reindex(columns=['nl', 'nr', 'q', 'rl', 'rr', 'j', 'a', 'b', 'al', 'ar', 're', 'low', 'c_type'])
+        self.description = self.build_description()
 
-        # Cov{Sx,Sx} invariant
-        df_q2_inv = model.module_covinv.df_output
-        df_q2_inv = pd_product_channel_single(df_q2_inv, N)
-        df_q2_inv['j'] = pd.NA
-        df_q2_inv = df_q2_inv.reindex(columns=['nl', 'nr', 'q', 'rl', 'rr', 'j', 'a', 'b', 'al', 'ar', 're', 'low', 'c_type'])
+        self.c_types = None if "c_type" not in self.description.columns else self.description.c_type.unique().tolist()
+        self.c_types_used = c_types
 
-        # E{Sx}
-        df_q1 = pd.DataFrame(columns=df_q2_inv.columns)
-        df_q1_orig = model.module_q1.df
-        df_q1['j'] = df_q1_orig['j']
-        df_q1['rl'] = df_q1['rr'] = df_q1['q'] = 1
-        df_q1['re'] = True
-        df_q1['low'] = [sc_idxer.is_low_pass(j) for j in df_q1_orig['j']]
-        df_q1['nr'] = df_q1['nl'] = df_q1_orig['n']
-        df_q1['ar'] = df_q1['al'] = df_q1_orig['a']
-        df_q1.loc[(df_q1.q == 1) & df_q1.low, ['c_type']] = 'mean'  # mean
-        df_q1.loc[df_q1.q == 2, ['c_type']] = 'ps'  # power spectrum
-        df_q1.loc[(df_q1.q == 1) & ~df_q1.low, ['c_type']] = 'spars'
-        df = pd.concat([df_q1, df_q2, df_q2_inv])
+        # cast model to the right precision
+        if dtype == torch.float64:
+            self.double()
 
-    elif model_type == 'scat+cov':
+    def double(self):
+        """ Change model parameters and buffers to double precision (float64 and complex128). """
+        def cast(t):
+            if t.is_floating_point():
+                return t.double()
+            if t.is_complex():
+                return t.cdouble()
+            return t
+        return self._apply(cast)
 
-        # Cov{Sx,Sx}
-        df_q2 = model.module_cov.df_scale
-        df_q2 = pd_product_channel_single(df_q2, N)
+    def build_descri_scattering_network(self, N, r_max):
+        """ Assemble the description of output of Sx = (Wx, W|Wx|). """
+        df_l = []
+        for (r, sc_idces, sc_paths, A) in \
+                zip(range(1, r_max + 1), self.sc_idxer.sc_idces, self.sc_idxer.sc_paths, [1, 1]):
+            # assemble description at a given scattering layer r
+            ns = pd.DataFrame(np.arange(N), columns=['n'])
+            scs = pd.DataFrame([sc for sc in sc_idces], columns=['sc'])
+            js = pd.DataFrame(np.array([self.sc_idxer.idx_to_path(sc, squeeze=False) for sc in scs.sc.values]),
+                              columns=['j1', 'j2'])
+            scs_js = pd.concat([scs, js], axis=1)
+            a_s = pd.DataFrame(np.arange(A), columns=['a'])
+            df_l.append(df_product(ns, scs_js, a_s))
+        df = pd.concat(df_l)
+        df['low'] = [self.sc_idxer.is_low_pass(sc) for sc in df['sc'].values]
+        df['r'] = [self.sc_idxer.r(sc) for sc in df['sc'].values]
+        df = df.reindex(columns=['r', 'n', 'sc', 'j1', 'j2', 'a', 'low'])
 
-        # E{Sx}
-        df_q1 = pd.DataFrame(columns=df_q2.columns)
-        df_q1_orig = model.module_q1.df
-        df_q1['scl'] = df_q1['scr'] = [sc_idxer.path_to_idx([j]) for j in df_q1_orig['j']]
-        df_q1['rl'] = df_q1['rr'] = df_q1['q'] = 1
-        df_q1['re'] = True
-        df_q1['low'] = [sc_idxer.is_low_pass(sc) for sc in df_q1['scl']]
-        df_q1['nr'] = df_q1['nl'] = df_q1_orig['n']
-        df_q1['jr1'] = df_q1['jl1'] = df_q1_orig['j']
-        df_q1['ar'] = df_q1['al'] = df_q1_orig['a']
-        df_q1['j2'] = np.nan
-        df_q1['j2'] = df_q1['j2'].astype('Int64')
-        df_q1.loc[(df_q1.q == 1) & df_q1.low, ['c_type']] = 'mean'  # mean
-        df_q1.loc[df_q1.q == 2, ['c_type']] = 'ps'  # power spectrum
-        df_q1.loc[(df_q1.q == 1) & ~df_q1.low, ['c_type']] = 'spars'
+        return df
 
-        # E{|W|Wx||}
-        ns = pd.DataFrame(np.arange(N), columns=['nl'])
-        sc = pd.DataFrame([idx for idx in sc_idxer.get_all_idx() if sc_idxer.r(idx) == 2], columns=['scl'])
-        js = pd.DataFrame(np.array([sc_idxer.idx_to_path(idx, squeeze=False) for idx in sc.values[:, 0]]),
-                          columns=[f'j{o+1}' for o in range(sc_idxer.r_max)])
-        sc_js = pd.concat([sc, js], axis=1)
-        a_s = pd.DataFrame(np.arange(A), columns=['al'])
-        df_scat2_q1 = pd.DataFrame(columns=df_q2.columns)
-        df_scat2_q1[['nl', 'scl', 'jl1', 'j2', 'al']] = df_merge(ns, sc_js, a_s)
-        df_scat2_q1['q'] = 1.0
-        df_scat2_q1.replace(-1, np.nan, inplace=True)
-        for o in range(1, sc_idxer.r_max):
-            df_scat2_q1[f'j{o+1}'] = df_scat2_q1[f'j{o+1}'].astype('Int64')
-        df_scat2_q1['rl'] = [sc_idxer.r(sc) for sc in df_scat2_q1['scl']]
-        df_scat2_q1['low'] = [sc_idxer.is_low_pass(sc) for sc in df_scat2_q1['scl']]
-        df_scat2_q1['c_type'] = 'scat2'
+    @staticmethod
+    def make_description_compatible(df):
+        """ Convert marginal description to correlation description. """
+        df = df.rename(columns={'r': 'rl', 'n': 'nl', 'sc': 'scl', 'j1': 'jl1', 'a': 'al'})
+        df['real'] = True
+        df['nr'] = df['nl']
+        df['rr'] = df['scr'] = df['ar'] = df['jr1'] = pd.NA
+        df['c_type'] = ['mean' if low else 'spars' for low in df.low.values]
+        df = df.reindex(columns=['c_type', 'nl', 'nr', 'q', 'rl', 'rr',
+                                 'scl', 'scr', 'jl1', 'jr1', 'j2', 'al', 'ar', 'real', 'low'])
 
-        df = pd.concat([df_q1, df_scat2_q1, df_q2])
+        return df
 
-    else:
-        raise ValueError("Unrecognized model type.")
+    @staticmethod
+    def build_description_marginal_moments(N, sc_idxer):
+        """ Assemble the description of averages E{Wx} and E{|Wx|}. """
+        scs_r1, scs_r2 = sc_idxer.sc_idces
 
-    return Description(df)
+        df1 = AvgLowPass.create_output_description(N=N, A=1, sc_idces=scs_r1, sc_idxer=sc_idxer)
+        df2 = AvgLowPass.create_output_description(N=N, A=1, sc_idces=scs_r2, sc_idxer=sc_idxer)
+        df_exp = pd.concat([df1, df2])
+
+        # compatibility with covariance description
+        df_exp = Model.make_description_compatible(df_exp)
+        df_exp['q'] = 1
+
+        return df_exp
+
+    @staticmethod
+    def build_description_correlation(N, sc_idxer):
+        """ Assemble the description the phase modulus correlation E{Sx, Sx}. """
+        scs_r1, scs_r2 = sc_idxer.sc_idces
+
+        df_ww = Cov.create_scale_description(scs_r1, scs_r1, sc_idxer)
+        df_wmw = Cov.create_scale_description(scs_r1, scs_r2, sc_idxer)
+        df_mw = Cov.create_scale_description(scs_r2, scs_r2, sc_idxer)
+
+        df_cov = pd.concat([
+            df_product_channel_single(df_ww, N, "same"),
+            df_product_channel_single(df_wmw, N, "same"),
+            df_product_channel_single(df_mw, N, "same")
+        ])
+
+        return df_cov
+
+    def build_description(self):
+        """ Assemble the description of output of forward. """
+
+        if self.model_type is None:
+
+            df = self.build_descri_scattering_network(self.N, self.r_max)
+
+        elif self.model_type == 'scat':
+
+            df = self.build_descri_scattering_network(self.N, self.r_max)
+            df['c_type'] = 'scat'
+            df['real'] = True
+            qs = pd.DataFrame(self.module_scat.qs.detach().cpu().numpy(), columns=['q'])
+            df = df_product(df, qs)
+
+        elif self.model_type == 'cov':
+
+            df_r1 = self.build_description_marginal_moments(self.N, self.sc_idxer)
+            df_r2 = self.build_description_correlation(self.N, self.sc_idxer)
+
+            df = pd.concat([df_r1, df_r2])
+
+        elif self.model_type == 'covreduced':
+
+            df_r1 = self.build_description_marginal_moments(self.N, self.sc_idxer)
+            df_r2 = self.build_description_correlation(self.N, self.sc_idxer)
+
+            # ps and low pass of phaseenv and envelope
+            df_cov_non_invariant = df_r2[df_r2['low'] | (df_r2['c_type'] == "ps")]
+            df_non_invariant = pd.concat([df_r1, df_cov_non_invariant])
+
+            # phaseenv and envelope that are invariant
+            df_inv = CovScaleInvariant.create_scale_description(self.sc_idxer)
+            df_inv = df_product_channel_single(df_inv, self.N, method="same")
+
+            # make non-invariant / invariant descriptions compatible
+            df_inv['scr'] = df_inv['scl'] = df_inv['jl1'] = df_inv['jr1'] = df_inv['j2'] = pd.NA
+            df_non_invariant['a'] = df_non_invariant['b'] = pd.NA
+
+            df = pd.concat([df_non_invariant, df_inv])
+
+        elif self.model_type == 'scat+cov':
+
+            df_exp = self.build_description_marginal_moments(self.N, self.sc_idxer)
+
+            df_scat = self.build_descri_scattering_network(self.N, self.r_max)
+            df_scat = df_scat[df_scat['r'] == 2]
+            df_scat = self.make_description_compatible(df_scat)
+            df_scat['q'] = 1
+            df_scat['c_type'] = 'scat'
+
+            df_cov = self.build_description_correlation(self.N, self.sc_idxer)
+
+            df = pd.concat([df_exp, df_scat, df_cov])
+
+        else:
+
+            raise ValueError("Unrecognized model type.")
+
+        return Description(df)
+
+    def compute_spars(self, Wx, WmWx):
+        """ Compute E{Wx} and E{|Wx|}. """
+        exp1 = self.module_q1_r1(Wx)
+        exp2 = self.module_q1_r2(WmWx)
+
+        return torch.cat([exp.view(Wx.shape[0], -1, 1) for exp in [exp1, exp2]], dim=1)
+
+    def compute_phase_mod_correlation(self, Wx, WmWx, reshape=True):
+        """ Compute phase-modulus correlation matrix E{rho Wx (rho Wx)^ *}. """
+        cov1 = self.module_cov_w(Wx, Wx)
+        cov2 = self.module_cov_wmw(Wx, WmWx)
+        cov3 = self.module_cov_mw(WmWx, WmWx)
+
+        def reshaper(y):
+            if reshape:
+                return y.view(Wx.shape[0], -1, 1)
+            return y.unsqueeze(-1)
+
+        return torch.cat([reshaper(cov) for cov in [cov1, cov2, cov3]], dim=-2)
+
+    def count_coefficients(self, **kwargs) -> int:
+        """ Returns the number of moments satisfying kwargs. """
+        descri = self.description
+        if self.c_types_used is not None:
+            descri = descri.reduce(c_type=self.c_types_used)
+        return descri.where(**kwargs).sum()
+
+    def forward(self, x):
+
+        # scattering layers
+        Wx = self.norm_layer(self.W1(x))
+        Sx_l = [Wx]
+        if self.r_max > 1:
+            WmWx = self.W2(torch.abs(Wx))
+            Sx_l.append(WmWx)
+
+        if self.model_type is None:
+
+            y = torch.cat([out.view(x.shape[0], -1, x.shape[-1]) for out in Sx_l], dim=1)
+
+        elif self.model_type == 'scat':
+
+            Sx = torch.cat([out.view(x.shape[0], -1, x.shape[-1]) for out in Sx_l], dim=1)
+            y = self.module_scat(Sx).view(x.shape[0], -1, 1)
+
+        elif self.model_type == 'cov':
+
+            exp = self.compute_spars(Wx, WmWx)
+            cov = self.compute_phase_mod_correlation(Wx, WmWx)
+            y = torch.cat([exp, cov], dim=1)
+
+        elif self.model_type == 'covreduced':
+
+            exp = self.compute_spars(Wx, WmWx)
+
+            noninv_mask = self.df_cov.where(c_type="ps") | self.df_cov.where(low=True)
+            cov_full = self.compute_phase_mod_correlation(Wx, WmWx, reshape=False)
+            cov_noninv = cov_full[..., noninv_mask, :]
+            cov_inv = self.module_covinv(cov_full)  # invariant to scaling
+
+            cov = torch.cat([c.view(x.shape[0], -1, 1) for c in [cov_noninv, cov_inv]], dim=-2)
+
+            y = torch.cat([exp, cov], dim=1)
+
+        elif self.model_type == 'scat+cov':
+
+            exp1 = self.compute_spars(Wx, WmWx)
+            exp2 = self.module_scat_q1(WmWx).view(x.shape[0], -1, 1)
+            exp = torch.cat([exp1, exp2], dim=1)
+
+            cov = self.compute_phase_mod_correlation(Wx, WmWx)
+
+            y = torch.cat([exp, cov], 1)
+
+        else:
+
+            raise ValueError("Unrecognized model type.")
+
+        if not y.is_complex():
+            y = torch.complex(y, torch.zeros_like(y))
+
+        Rx = DescribedTensor(x=None, y=y, descri=self.description)
+
+        if self.c_types_used is not None:
+            return y.reduce(c_type=self.c_types_used)
+
+        return Rx
 
 
-def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_norm,
-               model_type, qs, sigma2, norm_on_the_fly,
-               nchunks):
+def init_model(model_type, B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_norm, qs,
+               sigma2, norm_on_the_fly,
+               nchunks,
+               dtype):
     """ Initialize a scattering covariance model.
 
     :param N: number of in_data channel
@@ -233,12 +374,17 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
     :param wav_type2: wavelet type for the second layer
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param wav_norm: wavelet normalization i.e. l1, l2
-    :param model_type: moments to compute on scattering, ex: None, 'scat', 'cov', 'covreduced', 'scat+cov'
-    :param qs: if model_type == 'marginal' the exponents of the scattering marginal moments
+    :param model_type: moments to compute on scattering
+        None: compute Sx = W|Wx|(t,j1,j2) and keep time axis t
+        "scat": compute marginal moments on Sx: E{|Sx|^q} by time average
+        "cov": compute covariance on Sx: Cov{Sx, Sx} as well as E{|Wx|} and E{|Wx|^2} by time average
+        "covreduced": same as "cov" but compute reduced covariance: P Cov{Sx, Sx}, where P is the self-similar projection
+        "scat+cov": both "scat" and "cov"
+    :param qs: if model_type == 'scat' the exponents of the scattering marginal moments
     :param sigma2: a tensor of size J, wavelet power spectrum to normalize the representation with
     :param norm_on_the_fly: normalize first wavelet layer on the fly
-    :param keep_past: keep all layers in the output of the model
     :param nchunks: the number of chunks
+    :param dtype: data precision, either float32 or float64
 
     :return: a torch module
     """
@@ -250,101 +396,23 @@ def init_model(B, N, T, J, Q1, Q2, r_max, wav_type1, wav_type2, high_freq, wav_n
         cov_chunk = nchunks // B
 
     # SCATTERING MODULE
-    # time layers
-    sc_idxer = ScaleIndexer(J=J, Qs=[Q1, Q2], r_max=2)
-    W1 = Wavelet(T, J, Q1, wav_type1, high_freq, wav_norm, 1, sc_idxer)
-    W2 = Wavelet(T, J, Q2, wav_type2, high_freq, wav_norm, 2, sc_idxer)
-
-    # normalization layer
-    if norm_on_the_fly:
-        N_layer = NormalizationLayer(2, None, True)
-    elif model_type == 'covreduced' or sigma2 is not None:
-        N_layer = NormalizationLayer(2, sigma2.pow(0.5), False)
-    else:
-        N_layer = nn.Identity()
-
-    if r_max == 1:
-        scat_mod_l = [W1, N_layer]
-    elif r_max == 2:
-        scat_mod_l = [W1, N_layer, SkipConnection(nn.Sequential(Modulus(), W2), dim=2)]
-    else:
-        raise ValueError("More than 2 wavelet layers is not supported in the current version of the code.")
-    scat_l = nn.Sequential(*scat_mod_l)
-
-    shape_l = ScatteringShape(N, len(list(sc_idxer.get_all_idx())), 1, T)
-    shape_r = shape_l
-
-    # MODEL with MOMENTS on SCATTERING
-    class Model(nn.Module):
-        def __init__(self, model_type, scat_l, scat_r):
-            super(Model, self).__init__()
-            self.model_type = model_type
-            self.scat_l = scat_l
-            self.scat_r = scat_r
-            self.module_marginal = ScatCoefficients(qs=qs or [1.0, 2.0])
-            self.module_marginal1 = ScatCoefficients(qs=[1.0])
-            self.module_q1 = AvgLowPass(N, 1, sc_idxer)
-            self.module_cov = Cov(shape_l, shape_r, sc_idxer, cov_chunk) if (model_type is not None and 'cov' in model_type) else None
-            self.module_covinv = CovScaleInvariant(shape_l, shape_r, sc_idxer, self.module_cov.df_scale) if model_type == 'covreduced' else None
-
-            self.mask_noninv = self.module_cov.df_scale.where(low=True) | self.module_cov.df_scale.where(rl=1, rr=1) if model_type == 'covreduced' else None
-            self.mask_scat2_q1 = torch.BoolTensor([sc_idxer.r(idx) == 2 for idx in sc_idxer.get_all_idx()])
-
-        def forward(self, x):
-            sxl = scat_l(x)
-            sxr = sxl
-            if self.model_type is None:
-                repr = sxl.view((x.shape[0], -1, x.shape[-1]))
-            elif self.model_type == 'scat':
-                repr = self.module_marginal(sxl).view(x.shape[0], -1, 1)
-            elif self.model_type == 'cov':
-                m_q1 = self.module_q1(sxl)
-                cov = self.module_cov(sxl, sxr).view(x.shape[0], -1, 1)
-                repr = torch.cat([m_q1, cov], 1)
-            elif self.model_type == 'covreduced':
-                m_q1 = self.module_q1(sxl)
-                cov = self.module_cov(sxl, sxr)
-                covinv = self.module_covinv(cov).view(x.shape[0], -1, 1)  # invariant to scaling
-                covnoninv = cov[:, :, :, self.mask_noninv, :].view(x.shape[0], -1, 1)
-                repr = torch.cat([m_q1, covnoninv, covinv], 1)
-            elif self.model_type == 'scat+cov':
-                m_q1 = self.module_q1(sxl)
-                cov = self.module_cov(sxl, sxr).view(x.shape[0], -1, 1)
-                scat2_q1 = self.module_marginal1(sxl[:, :, self.mask_scat2_q1, :, :]).view(x.shape[0], -1, 1)
-                repr = torch.cat([m_q1, scat2_q1, cov], 1)
-            else:
-                raise ValueError("Unrecognized model type.")
-            return repr
-
-    class DescribedModel(nn.Module):
-        def __init__(self, module, description, model_type):
-            super(DescribedModel, self).__init__()
-            self.module = module
-            self.description = description
-            self.model_type = model_type
-            self.c_types = ['mean', 'ps', 'spars', 'scat', 'phaseenv', 'envelope']
-
-        def count_coefficients(self, **kwargs) -> int:
-            """ Returns the number of moments satisfying kwargs. """
-            return self.description.where(**kwargs).sum()
-
-        def forward(self, x):
-            return DescribedTensor(x=None, y=self.module(x), descri=self.description)
-
-    model = Model(model_type, scat_l, None)
-    description = infer_description(model, model_type, N, sc_idxer, 1)
-    model = ChunkedModule(batch_chunk, model)
-    model = DescribedModel(model, description, model_type)
+    model = Model(model_type, qs, None,
+                  T, J, [Q1, Q2], r_max, [wav_type1, wav_type2], high_freq, wav_norm,
+                  N,
+                  sigma2, norm_on_the_fly,
+                  cov_chunk,
+                  dtype)
+    model = ChunkedModule(model, batch_chunk)
 
     return model
 
 
 def compute_sigma2(x, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
-    marginal_model = init_model(B=x.shape[0], N=x.shape[1], T=x.shape[-1], J=J, Q1=Q1, Q2=Q2, r_max=1,
-                                wav_type1=wav_type, wav_type2=wav_type, high_freq=high_freq, wav_norm=wav_norm,
-                                model_type='scat', qs=[2.0], sigma2=None, norm_on_the_fly=False,
-                                nchunks=1)
+    marginal_model = init_model(model_type='scat', B=x.shape[0], N=x.shape[1], T=x.shape[-1], J=J, Q1=Q1, Q2=Q2,
+                                r_max=1, wav_type1=wav_type, wav_type2=wav_type, high_freq=high_freq, wav_norm=wav_norm,
+                                qs=[2.0], sigma2=None, norm_on_the_fly=False, nchunks=1,
+                                dtype=x.dtype)
     if cuda:
         x = x.cuda()
         marginal_model = marginal_model.cuda()
@@ -354,9 +422,8 @@ def compute_sigma2(x, J, Q1, Q2, wav_type, high_freq, wav_norm, cuda):
     return sigma2
 
 
-def analyze(x, J=None, Q1=1, Q2=1,
-            wav_type1='battle_lemarie', wav_type2='battle_lemarie', wav_norm='l1', high_freq=0.425,
-            model_type='cov', qs=None, normalize=None, nchunks=1, cuda=False):
+def analyze(x, model_type='cov', J=None, Q1=1, Q2=1, wav_type1='battle_lemarie', wav_type2='battle_lemarie',
+            wav_norm='l1', high_freq=0.425, qs=None, normalize=None, nchunks=1, cuda=False):
     """ Compute scattering based model.
 
     :param x: an array of shape (T, ) or (B, T) or (B, N, T)
@@ -371,8 +438,8 @@ def analyze(x, J=None, Q1=1, Q2=1,
         None: compute Sx = W|Wx|(t,j1,j2) and keep time axis t
         "scat": compute marginal moments on Sx: E{|Sx|^q} by time average
         "cov": compute covariance on Sx: Cov{Sx, Sx} as well as E{|Wx|} and E{|Wx|^2} by time average
-        "covreduced": compute reduced covariance: P Cov{Sx, Sx}, where P is the self-similar projection
-        "scat+cov": both scat and cov
+        "covreduced": same as "cov" but compute reduced covariance: P Cov{Sx, Sx}, where P is the self-similar projection
+        "scat+cov": both "scat" and "cov"
     :param normalize:
         None: no normalization,
         "each_ps": normalize Rx.y[b,:,:] by its power spectrum
@@ -383,12 +450,12 @@ def analyze(x, J=None, Q1=1, Q2=1,
 
     :return: a DescribedTensor result
     """
+    if model_type not in [None, "scat", "cov", "covreduced", "scat+cov"]:
+        raise ValueError("Unrecognized model type.")
     if normalize not in [None, "each_ps", "batch_ps"]:
         raise ValueError("Unrecognized normalization.")
     if model_type == 'covreduced' and normalize is None:
         raise ValueError("For covreduced model, user should provide a normalize argument.")
-    if model_type is None and normalize is not None:
-        raise ValueError("Can't use normalization with model_type=None.")
 
     if len(x.shape) == 1:  # assumes that x is of shape (T, )
         x = x[None, None, :]
@@ -398,8 +465,15 @@ def analyze(x, J=None, Q1=1, Q2=1,
     B, N, T = x.shape
     x = torch.tensor(x)[:, :, None, None, :]
 
+    if x.dtype not in [torch.float32, torch.float64]:
+        x = x.type(torch.float32)
+        print("WARNING. Casting data to float 32.")
+    dtype = x.dtype
+
     if J is None:
         J = int(np.log2(T)) - 3
+    if qs is None:
+        qs = [1.0, 2.0]
 
     # covreduced needs a spectrum normalization
     sigma2 = None
@@ -409,10 +483,10 @@ def analyze(x, J=None, Q1=1, Q2=1,
             sigma2 = sigma2.mean(0, keepdim=True)
 
     # initialize model
-    model = init_model(B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2,
-                       wav_type1=wav_type1, wav_type2=wav_type2, high_freq=high_freq, wav_norm=wav_norm,
-                       model_type=model_type, qs=qs, sigma2=sigma2, norm_on_the_fly=normalize=="each_ps",
-                       nchunks=nchunks)
+    model = init_model(model_type=model_type, B=B, N=N, T=T, J=J, Q1=Q1, Q2=Q2, r_max=2, wav_type1=wav_type1,
+                       wav_type2=wav_type2, high_freq=high_freq, wav_norm=wav_norm, qs=qs,
+                       sigma2=sigma2, norm_on_the_fly=normalize == "each_ps",
+                       nchunks=nchunks, dtype=dtype)
 
     # compute
     if cuda:
@@ -421,11 +495,12 @@ def analyze(x, J=None, Q1=1, Q2=1,
 
     Rx = model(x)
 
-    if normalize is not None:
+    if normalize is not None and model_type in ["cov", "covreduced", "scat+cov", "cov-cross"]:
         # retrieve the power spectrum that was normalized
-        mask_ps = Rx.descri.where(c_type='ps')
-        if mask_ps.sum() != 0:
-            Rx.y.real[:, mask_ps, :] = sigma2.reshape(sigma2.shape[0], -1, 1)
+        for n in range(N):
+            mask_ps = Rx.descri.where(c_type='ps', nl=n, nr=n)
+            if mask_ps.sum() != 0:
+                Rx.y[:, mask_ps, :] = sigma2[:, n, :].reshape(sigma2.shape[0], -1, 1)
 
     return Rx.cpu().sort()
 
@@ -467,7 +542,7 @@ class GenDataLoader(ProcessDataLoader):
                                 model_params['Q1'], model_params['Q2'],
                                 model_params['wav_type1'], model_params['high_freq'], model_params['wav_norm'],
                                 optim_params['cuda'])
-        model_params['sigma2'] = sigma2.mean(0, keepdim=True)
+        model_params['sigma2'] = sigma2.mean(0, keepdim=True)  # do a "batch_ps" normalization
 
         # prepare target representation
         if Rx is None:
@@ -488,7 +563,7 @@ class GenDataLoader(ProcessDataLoader):
             wn -= wn.mean(axis=-1, keepdims=True)
             wn /= np.std(wn, axis=-1, keepdims=True)
 
-            return wn * var + mean
+            return wn * var[:, None] + mean[:, None]
 
         x0 = gen_wn(x.shape, x0_mean, x0_var ** 0.5)
 
@@ -499,15 +574,15 @@ class GenDataLoader(ProcessDataLoader):
         # init loss, solver and convergence criterium
         loss = MSELossScat()
         solver_fn = Solver(model=model, loss=loss, xf=x, Rxf=Rx, x0=x0,
-                           weights=None, cuda=optim_params['cuda'], relative_optim=optim_params['relative_optim'])
+                           cuda=optim_params['cuda'])
 
         check_conv_criterion = CheckConvCriterion(solver=solver_fn, tol=optim_params['tol_optim'])
 
         print('Embedding: uses {} coefficients {}'.format(
-            model.count_coefficients(),
+            model.module.count_coefficients(),
             ' '.join(
-                ['{}={}'.format(c_type, model.count_coefficients(c_type=c_type))
-                 for c_type in model.c_types])
+                ['{}={}'.format(c_type, model.module.count_coefficients(c_type=c_type))
+                 for c_type in model.module.description.c_type.unique()])
         ))
 
         method, maxfun, jac = optim_params['method'], optim_params['maxfun'], optim_params['jac']
@@ -563,8 +638,8 @@ class GenDataLoader(ProcessDataLoader):
             return
 
 
-def generate(x, Rx=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-             model_type='cov', qs=None, nchunks=1, it=10000, tol_optim=5e-4,
+def generate(x, Rx=None, model_type='cov', S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1',
+             high_freq=0.425, qs=None, nchunks=1, it=10000, tol_optim=5e-4,
              generated_dir=None, exp_name=None, cuda=False, gpus=None, num_workers=1):
     """ Generate new realizations of x from a scattering covariance model.
     We first compute the scattering covariance representation of x and then sample it using gradient descent.
@@ -615,6 +690,7 @@ def generate(x, Rx=None, S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav
         'wav_norm': wav_norm,
         'model_type': model_type, 'qs': qs, 'sigma2': None, 'norm_on_the_fly': False,
         'nchunks': nchunks,
+        'dtype': torch.float64
     }
 
     # OPTIM params
@@ -695,8 +771,8 @@ def plot_marginal_moments(Rxs, estim_bar=False,
     axes = None if axes is None else axes.ravel()
 
     def get_data(Rx, q):
-        Wx_nj = Rx.select(rl=1, c_type=['ps', 'spars', 'marginal'], q=q, low=False)[:, :, 0]
-        if Wx_nj.dtype == torch.complex128:
+        Wx_nj = Rx.select(rl=1, c_type=['ps', 'scat', 'spars', 'marginal'], q=q, low=False)[:, :, 0]
+        if Wx_nj.is_complex():
             Wx_nj = Wx_nj.real
         logWx_nj = torch.log2(Wx_nj)
         return logWx_nj
@@ -727,8 +803,7 @@ def plot_marginal_moments(Rxs, estim_bar=False,
     for i_lb, (lb, Rx) in enumerate(zip(labels, Rxs)):
         if 'c_type' not in Rx.descri.columns:
             raise ValueError("The model output does not have the moments.")
-        columns = Rx.descri.columns
-        js = np.unique(Rx.descri.reduce(rl=1, low=False).j if 'j' in columns else Rx.descri.reduce(low=False).jl1)
+        js = np.unique(Rx.descri.reduce(low=False).jl1.dropna())
 
         has_power_spectrum = 2.0 in Rx.descri.q.values
         has_sparsity = 1.0 in Rx.descri.q.values
@@ -781,18 +856,18 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
     columns = Rxs[0].descri.columns
     J = Rxs[0].descri.j.max() if 'j' in columns else Rxs[0].descri.jl1.max()
 
-    c_wmw = torch.zeros(len(labels), J-1, dtype=torch.complex128)
+    c_wmw = torch.zeros(len(labels), J-1, dtype=Rxs[0].y.dtype)
     err_estim = torch.zeros(len(labels), J-1)
     err_self_simi = torch.zeros(len(labels), J-1)
 
     for i_lb, Rx in enumerate(Rxs):
-        # infer model type
-        if ('jl1' in Rx.descri) and ('jr1' in Rx.descri):
-            model_type = 'cov'
-        elif 'j' in Rx.descri:
-            model_type = 'covreduced'
-        else:
+
+        if 'phaseenv' not in Rx.descri.c_type.values:
             continue
+
+        model_type = 'general'
+        if 'a' in Rx.descri.columns:
+            model_type = 'covreduced'
 
         B = Rx.y.shape[0]
 
@@ -807,7 +882,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
                 c_wmw[i_lb, a-1] = c_mwm_n.mean(0)
                 err_estim[i_lb, a-1] = get_variance(c_mwm_n).pow(0.5)
             else:
-                c_mwm_nj = torch.zeros(B, J-a, dtype=torch.complex128)
+                c_mwm_nj = torch.zeros(B, J-a, dtype=Rx.y.dtype)
                 for j1 in range(a, J):
                     coeff = Rx.select(c_type='phaseenv', jl1=j1, jr1=j1-a, low=False)
                     coeff = coeff[:, 0, 0]
@@ -921,18 +996,18 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
     columns = Rxs[0].descri.columns
     J = Rxs[0].descri.j.max() if 'j' in columns else Rxs[0].descri.jl1.max()
 
-    cs = torch.zeros(len(labels), J-1, J-1, dtype=torch.complex128)
+    cs = torch.zeros(len(labels), J-1, J-1, dtype=Rxs[0].y.dtype)
     err_estim = torch.zeros(len(labels), J-1, J-1)
     err_self_simi = torch.zeros(len(labels), J-1, J-1)
 
     for i_lb, (Rx, lb, color) in enumerate(zip(Rxs, labels, COLORS)):
-        # infer model type
-        if ('jl1' in Rx.descri) and ('jr1' in Rx.descri):
-            model_type = 'cov'
-        elif 'j' in Rx.descri:
-            model_type = 'covreduced'
-        else:
+
+        if 'envelope' not in Rx.descri.c_type.values:
             continue
+
+        model_type = 'general'
+        if 'b' in Rx.descri.columns:
+            model_type = 'covreduced'
 
         if self_simi_bar and model_type == 'covreduced':
             raise ValueError("Impossible to output self-similarity error on covreduced model. Use a cov model instead.")
@@ -946,8 +1021,12 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
                 continue
 
             # prepare covariances
-            if model_type == 'cov':
-                cs_nj = torch.zeros(B, J+b-a, dtype=torch.complex128)
+            if model_type == "covreduced":
+                coeff_ab = Rx.select(c_type='envelope', a=a, b=b, low=False)
+                coeff_ab = coeff_ab[:, 0, 0]
+                cs[i_lb, a, J-1+b] = coeff_ab.mean(0)
+            else:
+                cs_nj = torch.zeros(B, J+b-a, dtype=Rx.y.dtype)
                 for j1 in range(a, J+b):
                     coeff = Rx.select(c_type='envelope', jl1=j1, jr1=j1-a, j2=j1-b, low=False)
                     coeff = coeff[:, 0, 0]
@@ -969,10 +1048,6 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
                 else:
                     err_estim[i_lb, a, J-1+b] = (torch.abs(cs_nj).pow(2.0).mean(0) -
                                                  torch.abs(cs_nj.mean(0)).pow(2.0)) / (B - 1)
-            else:
-                coeff_ab = Rx.select(c_type='envelope', a=a, b=b, low=False)
-                coeff_ab = coeff_ab[:, 0, 0]
-                cs[i_lb, a, J-1+b] = coeff_ab.mean(0)
 
     cs, cs_mod, cs_arg = cs.numpy(), np.abs(cs.numpy()), np.angle(cs.numpy())
     err_self_simi, err_estim = to_numpy(err_self_simi), to_numpy(err_estim)
@@ -1099,12 +1174,10 @@ def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, th
     if isinstance(Rxs, DescribedTensor):
         Rxs = [Rxs]
     for Rx in Rxs:
-        if 'nr' in Rx.descri.columns:
-            ns = Rx.descri.to_array(['nl', 'nr'])
-        else:
-            ns = Rx.descri.to_array(['nl'])
-        ns_unique = set([tuple(n) for n in ns])
-        if len(ns_unique) != 1:
+        if 'nl' not in Rx.descri.columns:
+            Rx.descri = Description(Model.make_description_compatible(Rx.descri))
+        ns_unique = Rx.descri[['nl', 'nr']].dropna().drop_duplicates()
+        if ns_unique.shape[0] > 1:
             raise ValueError("Plotting functions do not support multi-variate representation other than "
                              "univariate or single pair.")
 

@@ -19,7 +19,9 @@ class Description(pd.DataFrame):
     """ The description of an output tensor. It is a pandas dataframe with K rows. Each row i contains the description
     of a coefficients.
     """
-    def __init__(self, data: Union[pd.Series, pd.DataFrame, List[Iterable]] = None, columns: List[str] = None):
+    def __init__(self,
+                 data: Union[pd.Series, pd.DataFrame, List[Iterable]] = None,
+                 columns: List[str] = None) -> None:
         """ Data provides the rows: series, dataframe or list of rows. """
         super(Description, self).__init__(data=data)
         if columns is not None and not self.empty:
@@ -133,7 +135,7 @@ class DescribedTensor:
     def __init__(self,
                  x: Optional[torch.Tensor],
                  y: Optional[torch.Tensor],
-                 descri: Description):
+                 descri: Description) -> None:
         self.x = x
         self.y = y
         self.descri = descri
