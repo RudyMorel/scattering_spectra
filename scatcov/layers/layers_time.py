@@ -4,8 +4,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scatcov.scattering_network.filter_bank import init_band_pass, init_low_pass
-from scatcov.scattering_network.scale_indexer import ScaleIndexer
+from scatcov.layers.filter_bank import init_band_pass, init_low_pass
+from scatcov.layers.scale_indexer import ScaleIndexer
 
 
 # Fourier and torch compatibility
@@ -71,13 +71,19 @@ class Wavelet(nn.Module):
 
     def get_pairing(self):
         """ Initialize pairing to avoid computing negligable convolutions. """
-        # r = 1
-        pairing_1 = np.array([(0, j) for j in self.sc_idxer.sc_paths[0][:, 0]])
 
-        # r = 2
-        pairing_2 = self.sc_idxer.sc_paths[1]
+        if self.layer_r == 1:
+            return np.array([(0, j) for j in range(self.sc_idxer.JQ(r=1) + 1)])
 
-        return [pairing_1, pairing_2]
+        pairs = []
+        for path in self.sc_idxer.sc_paths[self.layer_r - 1]:
+            parent_path = path[:-1]
+            idx = [i for i, p in enumerate(self.sc_idxer.sc_paths[self.layer_r - 2]) if (p == parent_path).all()][0]
+            pairs.append((idx, path[-1]))
+
+        pairing = np.array(pairs)
+
+        return pairing
 
     def forward(self, x: torch.tensor) -> torch.tensor:
         """ Performs in Fourier the convolution (x * psi_lam, x * phi_J).
@@ -86,12 +92,10 @@ class Wavelet(nn.Module):
         :return: (C) x J{r+1} x A x T tensor
         """
 
-        pairing = self.pairing[self.layer_r-1]
-
         # since idx[:,0] is always lower than x_pad.shape[2], doing fft in second is always optimal
         x_pad = self.Pad.pad(x)
         x_hat = fft(x_pad)
-        x_filt_hat = x_hat[..., pairing[:, 0], :, :] * self.filt_hat[pairing[:, 1], :].unsqueeze(-2)
+        x_filt_hat = x_hat[..., self.pairing[:, 0], :, :] * self.filt_hat[self.pairing[:, 1], :].unsqueeze(-2)
         x_filt = self.Pad.unpad(ifft(x_filt_hat))
 
         return x_filt

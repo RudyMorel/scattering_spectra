@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable, grad
 
-from scatcov.scattering_network.described_tensor import DescribedTensor
+from scatcov.layers.described_tensor import DescribedTensor
 
 
 def compute_w_l2(weights: Dict, model: nn.Module, w_gap: Dict, nchunks: int) -> List[torch.tensor]:
@@ -38,8 +38,8 @@ class Solver(nn.Module):
     def __init__(self,
                  model: nn.Module, loss: nn.Module,
                  xf: Optional[np.ndarray] = None, Rxf: Optional[DescribedTensor] = None,
-                 cuda: bool = False,
-                 x0: Optional[np.ndarray] = None) -> None:
+                 x0: Optional[np.ndarray] = None,
+                 cuda: bool = False) -> None:
         super(Solver, self).__init__()
 
         self.model = model
@@ -68,7 +68,7 @@ class Solver(nn.Module):
 
     def format(self, x: np.ndarray, requires_grad: Optional[bool] = True) -> torch.tensor:
         """ Transforms x into a compatible format for the embedding. """
-        x = torch.DoubleTensor(x.reshape(self.x0.shape)).unsqueeze(-2).unsqueeze(-2)
+        x = torch.tensor(x.reshape(self.x0.shape)).unsqueeze(-2).unsqueeze(-2)
         if self.is_cuda:
             x = x.cuda()
         x = Variable(x, requires_grad=requires_grad)
@@ -96,6 +96,8 @@ class Solver(nn.Module):
         loss = self.loss(Rxt, self.Rxf, None, None)
         res_max = {c_type: max(res_max[c_type], self.loss.max_gap[c_type] if c_type in self.loss.max_gap else 0.0)
                    for c_type in self.model.module.c_types}
+        res_mean_pct = {c_type: max(res_max_pct[c_type], self.loss.mean_gap_pct[c_type] if c_type in self.loss.mean_gap_pct else 0.0)
+                        for c_type in self.model.module.c_types}
         res_max_pct = {c_type: max(res_max_pct[c_type], self.loss.max_gap_pct[c_type] if c_type in self.loss.max_gap_pct else 0.0)
                        for c_type in self.model.module.c_types}
 
@@ -108,7 +110,7 @@ class Solver(nn.Module):
         grad_x = grad_x.contiguous().detach().cpu().numpy()
         loss = loss.detach().cpu().numpy()
 
-        self.res = loss, grad_x.ravel(), res_max, res_max_pct
+        self.res = loss, grad_x.ravel(), res_max, res_mean_pct, res_max_pct
 
         return loss, grad_x.ravel()
 
@@ -144,12 +146,13 @@ class CheckConvCriterion:
         self.curr_xk = solver.xf
 
     def __call__(self, xk: np.ndarray) -> None:
-        err, grad_xk, max_gap, max_gap_pct = self.solver.res
+        err, grad_xk, max_gap, mean_gap_pct, max_gap_pct = self.solver.res
 
         gerr = np.max(np.abs(grad_xk))
         err, gerr = float(err), float(gerr)
         self.err = err
         self.max_gap = max_gap
+        self.mean_gap_pct = mean_gap_pct
         self.max_gap_pct = max_gap_pct
         self.gerr = gerr
         self.counter += 1
@@ -191,7 +194,8 @@ class CheckConvCriterion:
             + f" -- maxpct {cap(max(self.max_gap_pct.values())):.3%} -- gerr {self.gerr:.2E}",
             'cyan'))
         print(colored(
-            "".join([f"\n -- {c_type} max {value:.2e} -- maxpct {cap(self.max_gap_pct[c_type]):.3%}, "
+            "".join([f"\n -- {c_type:<15} max {value:.2e} -- meanpct {cap(self.mean_gap_pct[c_type]):.3%} "
+                     + f"-- maxpct {cap(self.max_gap_pct[c_type]):.3%}, "
                      for c_type, value in self.max_gap.items()])
             + msg,
             'green'))

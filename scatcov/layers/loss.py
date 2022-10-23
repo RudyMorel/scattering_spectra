@@ -4,15 +4,14 @@ import numpy as np
 import torch.nn as nn
 import torch
 
-from scatcov.scattering_network.described_tensor import DescribedTensor
+from scatcov.layers.described_tensor import DescribedTensor
 
 
 class MSELossScat(nn.Module):
     """ Implements l2 norm on the scattering coefficients or scattering covariances. """
-    def __init__(self, cutoff2: Optional[int] = None, cutoff3: Optional[int] = None):
+    def __init__(self):
         super(MSELossScat, self).__init__()
-        self.max_gap, self.max_gap_pct = {}, {}
-        self.lam_cutoff = 1e-5
+        self.max_gap, self.mean_gap_pct, self.max_gap_pct = {}, {}, {}  # tracking
 
     def compute_gap(self, input: Optional[DescribedTensor], target: DescribedTensor, weights):
         if input is None:
@@ -26,8 +25,11 @@ class MSELossScat(nn.Module):
         for c_type in np.unique(target.descri['c_type']):
             mask_c_type = target.descri.where(c_type=c_type)
             self.max_gap[c_type] = torch.max(torch.abs(gap[:, mask_c_type])).item()
-            max_gap_pct = torch.max(torch.abs(gap[:, mask_c_type] / target.select(mask_c_type)[:, :, 0])).item()
-            self.max_gap_pct[c_type] = max_gap_pct
+            mean_gap_pct = torch.abs(gap[:, mask_c_type]).mean()
+            mean_gap_pct /= torch.abs(target.select(mask_c_type)[:, :, 0]).mean()
+            self.mean_gap_pct[c_type] = mean_gap_pct.item()
+            max_gap_pct = torch.max(torch.abs(gap[:, mask_c_type] / target.select(mask_c_type)[:, :, 0]))
+            self.max_gap_pct[c_type] = max_gap_pct.item()
 
         return gap
 

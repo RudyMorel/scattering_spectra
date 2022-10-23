@@ -2,7 +2,6 @@
 from typing import *
 from itertools import product, chain
 from collections import OrderedDict
-from functools import cmp_to_key
 import numpy as np
 import torch
 import pandas as pd
@@ -34,8 +33,8 @@ class ScaleIndexer:
     def __init__(self,
                  J: int,
                  Qs: List[int],
-                 r_max: int) -> None:
-        self.J, self.Qs, self.r_max = J, Qs, r_max
+                 r: int) -> None:
+        self.J, self.Qs, self.r = J, Qs, r
 
         self.sc_paths = self.create_sc_paths()  # list[order] array
         self.p_coding, self.p_decoding = self.construct_path_coding_dicts()
@@ -43,36 +42,19 @@ class ScaleIndexer:
 
         self.low_pass_mask = self.compute_low_pass_mask()  # list[order] array
 
-        self.checks()
-
-    def checks(self):
-        """ Check if the construction is broken. """
-        # path and idx are in same order
-        argsort = np.argsort(np.array(list(self.p_coding.values())))
-        paths = list(self.p_coding.keys())
-        def compare(t1, t2): return (len(t1) == len(t2) and t1 < t2) or (len(t1) < len(t2))  # order on tuples
-        assert sorted(paths, key=cmp_to_key(compare)) == [paths[i] for i in argsort]
-
-        if all([Q == 1 for Q in self.Qs]):
-            for r in ([2] if self.r_max >= 2 else []):
-                # when p_idx[r] is collapsed we obtain p_idx[r-1] without low_pass
-                collapsed = np.unique(self.sc_paths[r - 1][:, :-1], axis=0)
-                previous_order = self.sc_paths[r - 2][~self.low_pass_mask[r - 2], :]
-                assert np.all(collapsed == previous_order)
-
     def JQ(self, r: int) -> int:
         """ Return the number of wavelet at a certain order. """
         return self.J * self.Qs[r-1]
 
     def condition(self, path: List[int]) -> bool:
         """ Tells if path j1, j2 ... j{r-1} jr is admissible. """
-        return (len(path) <= self.r_max) and \
+        return (len(path) <= self.r) and \
                all(i // self.Qs[order] < j // self.Qs[order+1] for order, (i, j) in enumerate(zip(path[:-1], path[1:])))
 
     def create_sc_paths(self) -> List[np.ndarray]:
         """ The tables j1, j2 ... j{r-1} jr for every order r. """
         sc_paths_l = []
-        for r in range(1, self.r_max + 1):
+        for r in range(1, self.r + 1):
             sc_paths_r = np.array([p for p in product(*[range(self.JQ(o+1)+1) for o in range(r)]) if self.condition(p)])
             sc_paths_l.append(sc_paths_r)
         return sc_paths_l
@@ -80,7 +62,7 @@ class ScaleIndexer:
     def create_sc_idces(self) -> List[np.ndarray]:
         """ The scale idces numerating scale paths. """
         sc_idces_l = []
-        for r in range(1, self.r_max + 1):
+        for r in range(1, self.r + 1):
             sc_idces_r = np.array([self.path_to_idx(p) for p in self.sc_paths[r-1]])
             sc_idces_l.append(sc_idces_r)
         return sc_idces_l
@@ -113,15 +95,19 @@ class ScaleIndexer:
             return tuple()
         if squeeze:
             return self.p_decoding[idx]
-        return self.p_decoding[idx] + (pd.NA, ) * (self.r_max - len(self.p_decoding[idx]))
+        return self.p_decoding[idx] + (pd.NA, ) * (self.r - len(self.p_decoding[idx]))
 
-    def is_low_pass(self, idx: int) -> bool:
+    def is_low_pass(self, path: Union[Tuple, List, np.ndarray]) -> bool:
         """ Determines if the path indexed by idx is ending with a low-pass. """
-        return self.idx_to_path(idx)[-1] >= self.JQ(self.r(idx))
+        if isinstance(path, (int, np.integer)):
+            path = self.idx_to_path(path)
+        return path[-1] >= self.JQ(self.order(path))
 
-    def r(self, idx: int) -> int:
+    def order(self, path: Union[Tuple, List, np.ndarray]) -> int:
         """ The scattering order of the path indexed by idx. """
-        return len(self.idx_to_path(idx))
+        if isinstance(path, (int, np.integer)):
+            path = self.idx_to_path(path)
+        return len(path)
 
     def compute_low_pass_mask(self) -> List[torch.Tensor]:
         """ Compute the low pass mask telling at each order which are the paths ending with a low pass filter. """

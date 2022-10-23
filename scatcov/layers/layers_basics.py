@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scatcov.scattering_network.described_tensor import DescribedTensor
+from scatcov.layers.described_tensor import DescribedTensor
 
 
 class NormalizationLayer(nn.Module):

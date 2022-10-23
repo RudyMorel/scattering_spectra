@@ -7,15 +7,64 @@ import torch
 import torch.nn as nn
 
 from scatcov.utils import df_product
-from scatcov.scattering_network.scale_indexer import ScaleIndexer
-from scatcov.scattering_network.described_tensor import Description
+from scatcov.layers.scale_indexer import ScaleIndexer
+from scatcov.layers.described_tensor import Description
+
+
+class Estimator(nn.Module):
+    """ Estimator used on scattering. """
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        pass
+
+
+class TimeAverage(Estimator):
+    """ Averaging operator to estimate probabilistic expectations or correlations. """
+    def __init__(self, window: Optional[Iterable] = None) -> None:
+        super(TimeAverage, self).__init__()
+        self.w = torch.tensor(window, dtype=torch.int64) if window is not None else None
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        if self.w is not None:
+            x = x[..., self.w]
+        return x.mean(-1, keepdim=True)
+
+
+class WindowSelector(Estimator):
+    """ Selecting operator. """
+    def __init__(self, window: Iterable) -> None:
+        super(WindowSelector, self).__init__()
+        self.w = torch.tensor(window, dtype=torch.int64)
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        return x[..., self.w]
+
+
+class Order1Moments(nn.Module):
+    """ Average low passes at a given scattering order. """
+    def __init__(self, ave: Optional[Estimator] = None):
+        super(Order1Moments, self).__init__()
+        self.ave = ave or TimeAverage()
+
+    def forward(self, Wx: torch.tensor) -> torch.tensor:
+        """ Computes E{Wx} and E{|Wx|}.
+
+        :param Wx: B x N x js x A x T tensor
+        :return: B x N x K x T' tensor
+        """
+        y_mod = self.ave(torch.abs(Wx[:, :, :-1, :, :]))
+        y_low = self.ave(Wx[:, :, -1:, :, :])
+
+        y = torch.cat([y_mod, y_low], dim=-3)
+
+        return y.reshape(y.shape[0], y.shape[1], -1, y.shape[-1])
 
 
 class ScatCoefficients(nn.Module):
     """ Compute per channel (marginal) order q moments. """
-    def __init__(self, qs: List[float]):
+    def __init__(self, qs: List[float], ave: Optional[Estimator] = None):
         super(ScatCoefficients, self).__init__()
         self.c_types = ['marginal']
+        self.ave = ave or TimeAverage()
 
         self.register_buffer('qs', torch.tensor(qs))
 
@@ -23,46 +72,14 @@ class ScatCoefficients(nn.Module):
         """ Computes E[|Sx|^q].
 
         :param x: B x N x js x A x T tensor
-        :return: B x N x js x 1 x len(qs) tensor
+        :return: B x N x js x A x len(qs) x T' tensor
         """
-        return (torch.abs(x).unsqueeze(-1) ** self.qs).mean(-2)
-
-
-class AvgLowPass(nn.Module):
-    """ Average low passes at a given scattering order. """
-    def __init__(self, r: int, sc_idxer: ScaleIndexer):
-        super(AvgLowPass, self).__init__()
-        self.mask_low = sc_idxer.low_pass_mask[r-1]
-
-    @staticmethod
-    def create_output_description(N:int, A: int, sc_idces: np.ndarray, sc_idxer: ScaleIndexer) -> pd.DataFrame:
-        """ Return the dataframe that describes the output of forward. """
-        df_n = pd.DataFrame(np.arange(N), columns=['n'])
-
-        js = [sc_idxer.idx_to_path(idx) for idx in sc_idces if sc_idxer.is_low_pass(idx)]
-
-        sc = pd.DataFrame([sc_idxer.path_to_idx(path[:-1] if len(path) > 1 else path) for path in js], columns=['sc'])
-        js = pd.DataFrame([sc_idxer.idx_to_path(idx, squeeze=False) for idx in sc.sc.values],
-                          columns=[f'j{o+1}' for o in range(sc_idxer.r_max)])
-        low = pd.DataFrame([idx == sc_idxer.JQ(1) for idx in sc.values[:, 0]], columns=['low'])
-        df_sc_js = pd.concat([sc, js, low], axis=1)
-        df_sc_js['a'] = 0
-        df_sc_js['r'] = [max(1, sc_idxer.r(idx) - 1) for idx in sc.values[:, 0]]
-
-        return df_product(df_n, df_sc_js).reindex(columns=['r', 'n', 'sc', 'j1', 'j2', 'a', 'low'])
-
-    def forward(self, x: torch.tensor) -> torch.tensor:
-        """ Computes E[x x^T].
-
-        :param x: B x N x js x A x T tensor
-        :return: B x N x K tensor
-        """
-        return x[:, :, self.mask_low, :, :].mean(-1).reshape(x.shape[0], x.shape[1], -1)
+        return self.ave(torch.abs(x).unsqueeze(-2) ** self.qs[:, None])
 
 
 class Cov(nn.Module):
     """ Diagonal model along scales. """
-    def __init__(self, rl: int, rr: int, sc_idxer: ScaleIndexer, nchunks: int):
+    def __init__(self, rl: int, rr: int, sc_idxer: ScaleIndexer, nchunks: int, ave: Optional[Estimator] = None):
         super(Cov, self).__init__()
         self.sc_idxer = sc_idxer
         self.nchunks = nchunks
@@ -75,12 +92,14 @@ class Cov(nn.Module):
         if rr == 2:
             self.idx_r -= sc_idxer.JQ(1) + 1
 
+        self.ave = ave or TimeAverage()
+
     @staticmethod
     def create_scale_description(scls: np.ndarray, scrs: np.ndarray, sc_idxer: ScaleIndexer) -> pd.DataFrame:
         """ Return the dataframe that describes the scale association in the output of forward. """
         info_l = []
         for (scl, scr) in product(scls, scrs):
-            rl, rr = sc_idxer.r(scl), sc_idxer.r(scr)
+            rl, rr = sc_idxer.order(scl), sc_idxer.order(scr)
             ql, qr = sc_idxer.Qs[rl-1], sc_idxer.Qs[rr-1]
             if rl > rr:
                 continue
@@ -110,8 +129,8 @@ class Cov(nn.Module):
                            2, rl, rr, scl, scr, *jl, *jr, 0, 0, low or scl == scr, low))
 
         out_columns = ['c_type', 'q', 'rl', 'rr', 'scl', 'scr'] + \
-                      [f'jl{r}' for r in range(1, sc_idxer.r_max + 1)] + \
-                      [f'jr{r}' for r in range(1, sc_idxer.r_max + 1)] + \
+                      [f'jl{r}' for r in range(1, sc_idxer.r + 1)] + \
+                      [f'jr{r}' for r in range(1, sc_idxer.r + 1)] + \
                       ['al', 'ar', 'real', 'low']
         df_scale = pd.DataFrame(info_l, columns=out_columns)
 
@@ -124,35 +143,23 @@ class Cov(nn.Module):
 
         return df_scale
 
-    @staticmethod
-    def cov(xl: torch.tensor, xr: torch.tensor) -> torch.tensor:
-        """ Computes Cov(xl, xr).
-
-        :param xl: B x Nl x K x T tensor
-        :param xr: B x Nr x K x T tensor
-        :return: B x Nl x Nr x K tensor, with Nr = 1 if diagonal model along channels
-        """
-        assert xl.shape[1] == xr.shape[1]
-        return (xl * xr).mean(-1).unsqueeze(-3)
-
     def forward(self, sxl: torch.tensor, sxr: Optional[torch.tensor] = None) -> torch.tensor:
         """ Extract diagonal covariances j2=j'2.
 
         :param sxl: B x Nl x jl x Al x T tensor
         :param sxr: B x Nr x jr x Ar x T tensor
-        :return: B x Nl x Nr x K tensor, with Nr = 1 if diagonal model along channels
+        :return: B x channels x K x T' tensor
         """
         if sxr is None:
             sxr = sxl
 
+        # select communicating scales
         scl, scr = self.idx_l, self.idx_r
+        xl, xr = sxl[:, :, scl, 0, :], sxr[:, :, scr, 0, :]
 
-        y_l = [
-            self.cov(sxl[:, :, scl[chunk], 0, :], sxr[:, :, scr[chunk], 0, :].conj())
-            for chunk in np.array_split(np.arange(self.df_scale.shape[0]), self.nchunks)
-        ]
+        y = self.ave(xl * xr.conj())
 
-        return torch.cat(y_l, -1)
+        return y
 
 
 class CovScaleInvariant(nn.Module):
