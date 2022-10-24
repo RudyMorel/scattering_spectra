@@ -141,7 +141,8 @@ class Model(nn.Module):
             if t.is_floating_point():
                 return t.double()
             if t.is_complex():
-                return t.cdouble()
+                # return t.cdouble()
+                return t.to(torch.complex128)
             return t
         return self._apply(cast)
 
