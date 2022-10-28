@@ -5,3 +5,4 @@ pathlib>=1.0.1
 termcolor>=1.1.0
 packaging>=21.3
 pandas>=1.4.1
+torch>=1.7
