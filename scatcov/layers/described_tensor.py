@@ -68,6 +68,9 @@ class Description(pd.DataFrame):
         df = super(Description, self).copy()
         return Description(data=df[mask])
 
+    def clone(self) -> Description:
+        return Description(self.copy())
+
     def sort(self, by: Optional[List[str]] = None) -> Description:
         """ Return lexicographically sorted idx info. """
         by = by or list(self.columns)
@@ -140,6 +143,10 @@ class DescribedTensor:
         self.y = y
         self.descri = descri
 
+    def shape(self) -> torch.Size:
+        """ The number of coefficients. """
+        return self.y.shape
+
     def size(self) -> int:
         """ The number of coefficients. """
         return self.descri.size()
@@ -161,6 +168,10 @@ class DescribedTensor:
         mask = self.descri.where(**kwargs) if mask is None else mask
         reduced_b = self.y if b is None else self.y[b:b+1, ...]
         return DescribedTensor(self.x, reduced_b[:, mask, ...], self.descri.reduce(mask))
+
+    def copy(self) -> DescribedTensor:
+        """ Return a copy of self. """
+        return DescribedTensor(None if self.x is None else self.x.clone(), self.y.clone(), self.descri.clone())
 
     def apply(self, h: Callable[[torch.Tensor], torch.Tensor]) -> DescribedTensor:
         """ Apply an operator h: y -> y. """
@@ -211,7 +222,7 @@ class DescribedTensor:
         return DescribedTensor(x=ld['x'], descri=ld['descri'], y=ld['y'])
 
     def cpu(self) -> DescribedTensor:
-        return DescribedTensor(None if self.x is None else self.x.cpu(), self.y.cpu(), self.descri)
+        return DescribedTensor(None if self.x is None else self.x.detach().cpu(), self.y.detach().cpu(), self.descri)
 
     def cuda(self, device=None) -> DescribedTensor:
         return DescribedTensor(None if self.x is None else self.x.cuda(device=device), self.y.cuda(device=device),

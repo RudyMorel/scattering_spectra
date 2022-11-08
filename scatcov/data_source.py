@@ -113,6 +113,7 @@ class ProcessDataLoader:
             x = self.generate_trajectory(**kwargs)
             fname = f"{np.random.randint(1e7, 1e8)}.npy"
             np.save(str(kwargs['dirpath'] / fname), x)
+            print(f"Saved: {kwargs['dirpath'].name}/{fname}")
         except ValueError as e:
             print(e)
             return

@@ -100,7 +100,7 @@ class Cov(nn.Module):
         info_l = []
         for (scl, scr) in product(scls, scrs):
             rl, rr = sc_idxer.order(scl), sc_idxer.order(scr)
-            ql, qr = sc_idxer.Qs[rl-1], sc_idxer.Qs[rr-1]
+            ql, qr = sc_idxer.Q[rl-1], sc_idxer.Q[rr-1]
             if rl > rr:
                 continue
 

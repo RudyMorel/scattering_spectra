@@ -23,12 +23,22 @@ class MSELossScat(nn.Module):
         gap = gap if weights is None else weights.unsqueeze(-1) * gap
 
         for c_type in np.unique(target.descri['c_type']):
-            mask_c_type = target.descri.where(c_type=c_type)
-            self.max_gap[c_type] = torch.max(torch.abs(gap[:, mask_c_type])).item()
-            mean_gap_pct = torch.abs(gap[:, mask_c_type]).mean()
-            mean_gap_pct /= torch.abs(target.select(mask_c_type)[:, :, 0]).mean()
+            # discard very small coefficients
+            mask_ctype = target.descri.where(c_type=c_type)
+            mask_small = (torch.abs(target.y[:, :, 0].mean(0)) < 0.01).cpu().numpy()
+            mask = mask_ctype & ~mask_small
+
+            if mask.sum() == 0:
+                self.max_gap[c_type] = self.mean_gap_pct[c_type] = self.max_gap_pct[c_type] = 0.0
+                continue
+
+            self.max_gap[c_type] = torch.max(torch.abs(gap[:, mask])).item()
+
+            mean_gap_pct = torch.abs(gap[:, mask]).mean()
+            mean_gap_pct /= torch.abs(target.select(mask)[:, :, 0]).mean()
             self.mean_gap_pct[c_type] = mean_gap_pct.item()
-            max_gap_pct = torch.max(torch.abs(gap[:, mask_c_type] / target.select(mask_c_type)[:, :, 0]))
+
+            max_gap_pct = torch.max(torch.abs(gap[:, mask] / target.select(mask)[:, :, 0]))
             self.max_gap_pct[c_type] = max_gap_pct.item()
 
         return gap

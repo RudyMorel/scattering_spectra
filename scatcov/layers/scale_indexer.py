@@ -31,10 +31,10 @@ class ScatteringShape:
 class ScaleIndexer:
     """ Implements the scale paths used in the scattering transform. """
     def __init__(self,
-                 J: int,
-                 Qs: List[int],
-                 r: int) -> None:
-        self.J, self.Qs, self.r = J, Qs, r
+                 r: int,
+                 J: List[int],
+                 Q: List[int]) -> None:
+        self.r, self.J, self.Q = r, J, Q
 
         self.sc_paths = self.create_sc_paths()  # list[order] array
         self.p_coding, self.p_decoding = self.construct_path_coding_dicts()
@@ -44,12 +44,12 @@ class ScaleIndexer:
 
     def JQ(self, r: int) -> int:
         """ Return the number of wavelet at a certain order. """
-        return self.J * self.Qs[r-1]
+        return self.J[r-1] * self.Q[r-1]
 
     def condition(self, path: List[int]) -> bool:
         """ Tells if path j1, j2 ... j{r-1} jr is admissible. """
         return (len(path) <= self.r) and \
-               all(i // self.Qs[order] < j // self.Qs[order+1] for order, (i, j) in enumerate(zip(path[:-1], path[1:])))
+               all(i // self.Q[order] < j // self.Q[order + 1] for order, (i, j) in enumerate(zip(path[:-1], path[1:])))
 
     def create_sc_paths(self) -> List[np.ndarray]:
         """ The tables j1, j2 ... j{r-1} jr for every order r. """

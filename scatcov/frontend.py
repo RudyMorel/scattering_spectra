@@ -87,7 +87,7 @@ def load_data(process_name, R, T, cache_dir=None, **data_param):
 class Model(nn.Module):
     """ Model class for analysis and generation. """
     def __init__(self, model_type, qs, c_types,
-                 T, J, Qs, r, wav_types, high_freq, wav_norm,
+                 T, r, J, Q, wav_type, high_freq, wav_norm,
                  N,
                  sigma2, norm_on_the_fly,
                  estim_operator,
@@ -95,12 +95,12 @@ class Model(nn.Module):
                  dtype):
         super(Model, self).__init__()
         self.model_type = model_type
-        self.sc_idxer = ScaleIndexer(J=J, Qs=Qs, r=r)
+        self.sc_idxer = ScaleIndexer(r=r, J=J, Q=Q)
         self.r = r
 
         # time layers
-        self.Ws = nn.ModuleList([Wavelet(T, J, Q, wtype, wav_norm, high_freq, order, self.sc_idxer)
-                                 for (order, Q, wtype) in zip(range(1, r + 1), Qs, wav_types)])
+        self.Ws = nn.ModuleList([Wavelet(T, J[o], Q[o], wav_type[o], wav_norm[o], high_freq[o], o+1, self.sc_idxer)
+                                 for o in range(r)])
 
         # normalization layer
         if norm_on_the_fly:
@@ -366,7 +366,7 @@ class Model(nn.Module):
         return Rx
 
 
-def init_model(model_type, B, N, T, J, r, Qs, wav_types, high_freq, wav_norm,
+def init_model(model_type, B, N, T, r, J, Q, wav_type, high_freq, wav_norm,
                qs,
                sigma2, norm_on_the_fly,
                estim_operator,
@@ -377,12 +377,12 @@ def init_model(model_type, B, N, T, J, r, Qs, wav_types, high_freq, wav_norm,
     :param B: batch size
     :param N: number of in_data channel
     :param T: number of time samples
-    :param J: number of octaves
     :param r: number of wavelet layers
-    :param Qs: number of scales per octave for each wavelet layer
-    :param wav_types: wavelet types for each wavelet layer
-    :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
-    :param wav_norm: wavelet normalization i.e. l1, l2
+    :param J: number of octaves for each waveelt layer
+    :param Q: number of scales per octave for each wavelet layer
+    :param wav_type: wavelet types for each wavelet layer
+    :param high_freq: central frequency of mother wavelet for each waveelt layer, 0.5 gives important aliasing
+    :param wav_norm: wavelet normalization for each waveelt layer e.g. l1, l2
         None: compute Sx = W|Wx|(t,j1,j2) and keep time axis t
         "scat": compute marginal moments on Sx: E{|Sx|^q} by time average
         "cov": compute covariance on Sx: Cov{Sx, Sx} as well as E{|Wx|} and E{|Wx|^2} by time average
@@ -390,8 +390,6 @@ def init_model(model_type, B, N, T, J, r, Qs, wav_types, high_freq, wav_norm,
         "scat+cov": both "scat" and "cov"
     :param qs: if model_type == 'scat' the exponents of the scattering marginal moments
     :param sigma2: a tensor of size B x N x J, wavelet power spectrum to normalize the representation with
-    :param sigma2_L1: a tensor of size B x N1 x J, normalization on first pca
-    :param sigma2_L2: a tensor of size B x N2 x J, normalization on second pca
     :param norm_on_the_fly: normalize first wavelet layer on the fly
     :param estim_operator: estimation operator to use
     :param nchunks: the number of chunks
@@ -408,7 +406,7 @@ def init_model(model_type, B, N, T, J, r, Qs, wav_types, high_freq, wav_norm,
 
     # SCATTERING MODULE
     model = Model(model_type, qs, None,
-                  T, J, Qs, r, wav_types, high_freq, wav_norm,
+                  T, r, J, Q, wav_type, high_freq, wav_norm,
                   N,
                   sigma2, norm_on_the_fly,
                   estim_operator,
@@ -419,10 +417,10 @@ def init_model(model_type, B, N, T, J, r, Qs, wav_types, high_freq, wav_norm,
     return model
 
 
-def compute_sigma2(x, J, Qs, wav_types, high_freq, wav_norm, cuda):
+def compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
     marginal_model = init_model(model_type='scat', B=x.shape[0], N=x.shape[1], T=x.shape[-1],
-                                J=J, r=1, Qs=Qs, wav_types=wav_types, high_freq=high_freq, wav_norm=wav_norm,
+                                r=1, J=J, Q=Q, wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
                                 qs=[2.0], sigma2=None, norm_on_the_fly=False,
                                 estim_operator=None, nchunks=1, dtype=x.dtype)
     if cuda:
@@ -434,20 +432,20 @@ def compute_sigma2(x, J, Qs, wav_types, high_freq, wav_norm, cuda):
     return sigma2
 
 
-def analyze(x, model_type='cov', J=None, r=2, Qs=1, wav_types='battle_lemarie', wav_norm='l1', high_freq=0.425,
+def analyze(x, model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
             qs=None,
-            normalize=None,
+            normalize=None, keep_ps=False,
             estim_operator=None,
             nchunks=1, cuda=False):
     """ Compute scattering based model.
 
     :param x: an array of shape (T, ) or (B, T) or (B, N, T)
-    :param J: number of octaves
     :param r: number of wavelet layers
-    :param Qs: number of scales per octave for each wavelet layer
-    :param wav_types: wavelet types for each wavelet layer
-    :param wav_norm: wavelet normalization i.e. l1, l2
-    :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
+    :param J: number of octaves for each wavelet layer
+    :param Q: number of scales per octave for each wavelet layer
+    :param wav_type: wavelet types for each wavelet layer
+    :param wav_norm: wavelet normalization i.e. l1, l2 for each layer
+    :param high_freq: central frequency of mother wavelet for each layer, 0.5 gives important aliasing
     :param model_type: moments to compute on scattering
         None: compute Sx = W|Wx|(t,j1,j2) and keep time axis t
         "scat": compute marginal moments on Sx: E{|Sx|^q} by time average
@@ -459,6 +457,7 @@ def analyze(x, model_type='cov', J=None, r=2, Qs=1, wav_types='battle_lemarie', 
         "each_ps": normalize Rx.y[b,:,:] by its power spectrum
         "batch_ps": normalize RX.y[b,:,:] by the average power spectrum over all trajectories b in the batch
     :param qs: exponent to use in a marginal model
+    :param keep_ps: keep the power spectrum even after normalization
     :param estim_operator: AveragingOperator by default, but can be overwritten
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param cuda: does calculation on gpu
@@ -472,7 +471,7 @@ def analyze(x, model_type='cov', J=None, r=2, Qs=1, wav_types='battle_lemarie', 
     if model_type == "covreduced" and normalize is None:
         raise ValueError("For covreduced model, user should provide a normalize argument.")
     if r > 2 and model_type not in [None, 'scat']:
-        raise ValueError("Moments with covariance moments is not implemented for more than 3 convolution layers.")
+        raise ValueError("Moments with covariance are not implemented for more than 3 convolution layers.")
 
     if len(x.shape) == 1:  # assumes that x is of shape (T, )
         x = x[None, None, :]
@@ -487,24 +486,30 @@ def analyze(x, model_type='cov', J=None, r=2, Qs=1, wav_types='battle_lemarie', 
         print("WARNING. Casting data to float 32.")
     dtype = x.dtype
 
-    if isinstance(Qs, int):
-        Qs = [Qs] * r
-    if isinstance(wav_types, str):
-        wav_types = [wav_types] * r
     if J is None:
         J = int(np.log2(T)) - 3
+    if isinstance(J, int):
+        J = [J] * r
+    if isinstance(Q, int):
+        Q = [Q] * r
+    if isinstance(wav_type, str):
+        wav_type = [wav_type] * r
+    if isinstance(wav_norm, str):
+        wav_norm = [wav_norm] * r
+    if isinstance(high_freq, float):
+        high_freq = [high_freq] * r
     if qs is None:
         qs = [1.0, 2.0]
 
     # covreduced needs a spectrum normalization
     sigma2 = None
     if normalize is not None:
-        sigma2 = compute_sigma2(x, J, Qs, wav_types, high_freq, wav_norm, cuda)
+        sigma2 = compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, cuda)
         if normalize == "batch_ps":
             sigma2 = sigma2.mean(0, keepdim=True)
 
     # initialize model
-    model = init_model(model_type=model_type, B=B, N=N, T=T, J=J, r=r, Qs=Qs, wav_types=wav_types, high_freq=high_freq,
+    model = init_model(model_type=model_type, B=B, N=N, T=T, r=r, J=J, Q=Q, wav_type=wav_type, high_freq=high_freq,
                        wav_norm=wav_norm, qs=qs, sigma2=sigma2,
                        norm_on_the_fly=normalize == "each_ps", estim_operator=estim_operator,
                        nchunks=nchunks, dtype=dtype)
@@ -516,14 +521,36 @@ def analyze(x, model_type='cov', J=None, r=2, Qs=1, wav_types='battle_lemarie', 
 
     Rx = model(x)
 
-    if normalize is not None and model_type in ["cov", "covreduced", "scat+cov"] and estim_operator is None:
+    if keep_ps and normalize is not None and model_type in ["cov", "covreduced", "scat+cov"] and estim_operator is None:
         # retrieve the power spectrum that was normalized
         for n in range(N):
             mask_ps = Rx.descri.where(c_type='ps', nl=n, nr=n)
             if mask_ps.sum() != 0:
-                Rx.y[:, mask_ps, :] = sigma2[:, n, :].reshape(sigma2.shape[0], -1, 1)
+                Rx.y[:, mask_ps, :] = Rx.y[:, mask_ps, :] * sigma2[:, n, :].reshape(sigma2.shape[0], -1, 1)
 
-    return Rx.cpu().sort()
+    return Rx.cpu()
+
+
+def format_to_real(Rx):
+    """
+    Transforms a complex described tensor into a real tensor by correctly handling real and non-real coefficients.
+
+    :param Rx: DescribedTensor
+    :return: DescribedTensor that possess a real column which indicates real part or imaginary part
+    """
+    if "real" not in Rx.descri:
+        raise ValueError("Described tensor should have a column indicating which coefficients are real.")
+    Rx_real = Rx.reduce(real=True)
+    Rx_complex = Rx.reduce(real=False)
+
+    descri_complex_real = Rx_complex.descri.clone()
+    descri_complex_imag = Rx_complex.descri.clone()
+    descri_complex_real["real"] = True
+    descri = Description(pd.concat([Rx_real.descri, descri_complex_real, descri_complex_imag]))
+
+    y = torch.cat([Rx_real.y.real, Rx_complex.y.real, Rx_complex.y.imag], dim=1)
+
+    return DescribedTensor(None, y, descri)
 
 
 ##################
@@ -540,9 +567,9 @@ class GenDataLoader(ProcessDataLoader):
         """ The directory path in which the generated trajectories will be stored. """
         B_target = kwargs['x'].shape[0]
         model_params = kwargs['model_params']
-        N, T, J, Qs, r, wav_types, model_type = \
-            (model_params[key] for key in ['N', 'T', 'J', 'Qs', 'r', 'wav_types', 'model_type'])
-        path_str = f"{self.model_name}_{wav_types[0]}_B{B_target}_N{N}_T{T}_J{J}_Q1_{Qs[0]}_Q2_{Qs[1]}_rmax{r}_model_{model_type}" \
+        N, T, r, J, Q, wav_type, model_type = \
+            (model_params[key] for key in ['N', 'T', 'r', 'J', 'Q', 'wav_type', 'model_type'])
+        path_str = f"{self.model_name}_{wav_type[0]}_B{B_target}_N{N}_T{T}_J{J}_Q1_{Q[0]}_Q2_{Q[1]}_rmax{r}_model_{model_type}" \
                    + f"_tol{kwargs['optim_params']['tol_optim']:.2e}" \
                    + f"_it{kwargs['optim_params']['it']}"
         return self.dir_name / path_str.replace('.', '_').replace('-', '_')
@@ -556,23 +583,25 @@ class GenDataLoader(ProcessDataLoader):
         if filename.is_file():
             raise OSError("File for saving this trajectory already exists.")
 
-        x_torch = torch.tensor(x).unsqueeze(-2).unsqueeze(-2)
+        x_torch = torch.tensor(x, dtype=torch.float64).unsqueeze(-2).unsqueeze(-2)
 
         # sigma = None
-        sigma2 = compute_sigma2(x_torch, model_params['J'], model_params['Qs'],
-                                model_params['wav_types'], model_params['high_freq'], model_params['wav_norm'],
+        sigma2 = compute_sigma2(x_torch, model_params['J'], model_params['Q'],
+                                model_params['wav_type'], model_params['high_freq'], model_params['wav_norm'],
                                 optim_params['cuda'])
         model_params['sigma2'] = sigma2.mean(0, keepdim=True)  # do a "batch_ps" normalization
+
+        # initialize model
+        print("Initialize model")
+        model = init_model(B=x.shape[0], **model_params)
+        if gpu is not None:
+            x_torch = x_torch.cuda()
+            model = model.cuda()
 
         # prepare target representation
         if Rx is None:
             print("Preparing target representation")
-            model_avg = init_model(B=x_torch.shape[0], **model_params)
-            if gpu is not None:
-                x_torch = x_torch.cuda()
-                model_avg = model_avg.cuda()
-
-            Rx = model_avg(x_torch).mean_batch().cpu()
+            Rx = model(x_torch).mean_batch().cpu()
 
         # prepare initial gaussian process
         x0_mean = x.mean(-1).mean(0)
@@ -588,10 +617,6 @@ class GenDataLoader(ProcessDataLoader):
             return wn * var[:, None] + mean[:, None]
 
         x0 = gen_wn(x.shape, x0_mean, x0_var ** 0.5)
-
-        # init model
-        print("Initialize model")
-        model = init_model(B=x.shape[0], **model_params)
 
         # init loss, solver and convergence criterium
         loss = MSELossScat()
@@ -658,22 +683,28 @@ class GenDataLoader(ProcessDataLoader):
             x = self.generate_trajectory(**kwargs)
             fname = f"{np.random.randint(1e7, 1e8)}.npy"
             np.save(str(kwargs['dirpath'] / fname), x)
+            print(f"Saved: {kwargs['dirpath'].name}/{fname}")
         except ValueError as e:
             print(e)
             return
 
 
-def generate(x, Rx=None, model_type='cov', S=1, J=None, Q1=1, Q2=1, wav_type='battle_lemarie', wav_norm='l1',
-             high_freq=0.425, qs=None, nchunks=1, it=10000, tol_optim=5e-4,
-             generated_dir=None, exp_name=None, cuda=False, gpus=None, num_workers=1):
+def generate(x, Rx=None, S=1,
+             model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
+             qs=None,
+             nchunks=1, it=10000,
+             tol_optim=5e-4,
+             generated_dir=None, exp_name=None,
+             cuda=False, gpus=None, num_workers=1):
     """ Generate new realizations of x from a scattering covariance model.
     We first compute the scattering covariance representation of x and then sample it using gradient descent.
 
     :param x: an array of shape (T, ) or (B, T) or (B, N, T)
     :param Rx: instead of x, the representation to generate from
-    :param J: number of octaves
-    :param Q1: number of scales per octave on first wavelet layer
-    :param Q2: number of scales per octave on second wavelet layer
+    :param S: number of syntheses
+    :param r: number of wavelet layers
+    :param J: number of octaves for each wavelet layer
+    :param Q: number of scales per octave for each wavelet layer
     :param wav_type: wavelet type
     :param wav_norm: wavelet normalization i.e. l1, l2
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
@@ -699,6 +730,16 @@ def generate(x, Rx=None, model_type='cov', S=1, J=None, Q1=1, Q2=1, wav_type='ba
 
     if J is None:
         J = int(np.log2(T)) - 5
+    if isinstance(J, int):
+        J = [J] * r
+    if isinstance(Q, int):
+        Q = [Q] * r
+    if isinstance(wav_type, str):
+        wav_type = [wav_type] * r
+    if isinstance(wav_norm, str):
+        wav_norm = [wav_norm] * r
+    if isinstance(high_freq, float):
+        high_freq = [high_freq] * r
     if qs is None:
         qs = [1.0, 2.0]
     if generated_dir is None:
@@ -709,8 +750,8 @@ def generate(x, Rx=None, model_type='cov', S=1, J=None, Q1=1, Q2=1, wav_type='ba
 
     # MODEL params
     model_params = {
-        'N': N, 'T': T, 'J': J, 'Qs': [Q1, Q2], 'r': 2,
-        'wav_types': [wav_type, wav_type],  # 'battle_lemarie' 'morlet' 'shannon'
+        'N': N, 'T': T, 'r': r, 'J': J, 'Q': Q,
+        'wav_type': wav_type,  # 'battle_lemarie' 'morlet' 'shannon'
         'high_freq': high_freq,  # 0.323645 or 0.425
         'wav_norm': wav_norm,
         'model_type': model_type, 'qs': qs,

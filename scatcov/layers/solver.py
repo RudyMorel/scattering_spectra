@@ -37,7 +37,8 @@ class Solver(nn.Module):
     """ A class that contains all information necessary for generation. """
     def __init__(self,
                  model: nn.Module, loss: nn.Module,
-                 xf: Optional[np.ndarray] = None, Rxf: Optional[DescribedTensor] = None,
+                 xf: Optional[np.ndarray] = None,
+                 Rxf: Optional[DescribedTensor] = None,
                  x0: Optional[np.ndarray] = None,
                  cuda: bool = False) -> None:
         super(Solver, self).__init__()
@@ -45,30 +46,28 @@ class Solver(nn.Module):
         self.model = model
         self.loss = loss
 
-        self.N = xf.shape[2]
+        self.B = xf.shape[0]
+        self.N = xf.shape[1]
         self.nchunks = 1
         self.is_cuda = cuda
         self.x0 = torch.DoubleTensor(x0)
-        self.xf = torch.DoubleTensor(xf)
 
         self.res = None, None
 
         if cuda:
             self.cuda()
-            self.xf = self.xf.cuda()
-            if Rxf is not None:
-                Rxf = Rxf.cuda()
+            Rxf = Rxf.cuda()
 
         # compute target representation Rxf
         self.Rxf = Rxf
 
         # compute initial loss
-        Rx0_chunk = self.model(self.format(x0, requires_grad=False))
-        self.loss0 = self.loss(Rx0_chunk, self.Rxf, None, None).detach().cpu().numpy()
+        Rx0 = self.model(self.format(x0, requires_grad=False))
+        self.loss0 = self.loss(Rx0, self.Rxf, None, None).detach().cpu().numpy()
 
     def format(self, x: np.ndarray, requires_grad: Optional[bool] = True) -> torch.tensor:
         """ Transforms x into a compatible format for the embedding. """
-        x = torch.tensor(x.reshape(self.x0.shape)).unsqueeze(-2).unsqueeze(-2)
+        x = torch.tensor(x.reshape(self.B, self.N, -1)).unsqueeze(-2).unsqueeze(-2)
         if self.is_cuda:
             x = x.cuda()
         x = Variable(x, requires_grad=requires_grad)
@@ -142,8 +141,6 @@ class CheckConvCriterion:
         self.logs_loss = []
         self.logs_grad = []
         self.logs_x = []
-
-        self.curr_xk = solver.xf
 
     def __call__(self, xk: np.ndarray) -> None:
         err, grad_xk, max_gap, mean_gap_pct, max_gap_pct = self.solver.res
