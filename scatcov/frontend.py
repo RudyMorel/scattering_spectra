@@ -419,10 +419,12 @@ def init_model(model_type, B, N, T, r, J, Q, wav_type, high_freq, wav_norm,
 
 def compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
-    marginal_model = init_model(model_type='scat', B=x.shape[0], N=x.shape[1], T=x.shape[-1],
-                                r=1, J=J, Q=Q, wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
-                                qs=[2.0], sigma2=None, norm_on_the_fly=False,
-                                estim_operator=None, nchunks=1, dtype=x.dtype)
+    marginal_model = init_model(model_type='scat', B=x.shape[0], N=x.shape[1], T=x.shape[-1], r=1, J=J, Q=Q,
+                                wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
+                                qs=[2.0],
+                                sigma2=None, norm_on_the_fly=False,
+                                estim_operator=None,
+                                nchunks=1, dtype=x.dtype)
     if cuda:
         x = x.cuda()
         marginal_model = marginal_model.cuda()
@@ -509,9 +511,11 @@ def analyze(x, model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wa
             sigma2 = sigma2.mean(0, keepdim=True)
 
     # initialize model
-    model = init_model(model_type=model_type, B=B, N=N, T=T, r=r, J=J, Q=Q, wav_type=wav_type, high_freq=high_freq,
-                       wav_norm=wav_norm, qs=qs, sigma2=sigma2,
-                       norm_on_the_fly=normalize == "each_ps", estim_operator=estim_operator,
+    model = init_model(model_type=model_type, B=B, N=N, T=T, r=r,
+                       J=J, Q=Q, wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
+                       qs=qs,
+                       sigma2=sigma2, norm_on_the_fly=normalize == "each_ps",
+                       estim_operator=estim_operator,
                        nchunks=nchunks, dtype=dtype)
 
     # compute
@@ -574,11 +578,11 @@ class GenDataLoader(ProcessDataLoader):
                    + f"_it{kwargs['optim_params']['it']}"
         return self.dir_name / path_str.replace('.', '_').replace('-', '_')
 
-    def generate_trajectory(self, x, Rx, model_params, optim_params, gpu, dirpath):
+    def generate_trajectory(self, seed, x, Rx, model_params, optim_params, gpu, dirpath):
         """ Performs cached generation. """
         if gpu is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-        np.random.seed(None)
+        np.random.seed(seed)
         filename = dirpath / str(np.random.randint(1e7, 1e8))
         if filename.is_file():
             raise OSError("File for saving this trajectory already exists.")
@@ -604,19 +608,22 @@ class GenDataLoader(ProcessDataLoader):
             Rx = model(x_torch).mean_batch().cpu()
 
         # prepare initial gaussian process
-        x0_mean = x.mean(-1).mean(0)
-        x0_var = np.var(x, axis=-1).mean(0)
+        if optim_params['x0'] is not None:
+            x0 = optim_params['x0']
+        else:
+            x0_mean = x.mean(-1).mean(0)
+            x0_var = np.var(x, axis=-1).mean(0)
 
-        def gen_wn(shape, mean, var):
-            wn = np.random.randn(*shape)
-            if x.dtype == np.float32:
-                wn = np.float32(wn)
-            wn -= wn.mean(axis=-1, keepdims=True)
-            wn /= np.std(wn, axis=-1, keepdims=True)
+            def gen_wn(shape, mean, var):
+                wn = np.random.randn(*shape)
+                if x.dtype == np.float32:
+                    wn = np.float32(wn)
+                wn -= wn.mean(axis=-1, keepdims=True)
+                wn /= np.std(wn, axis=-1, keepdims=True)
 
-            return wn * var[:, None] + mean[:, None]
+                return wn * var[:, None] + mean[:, None]
 
-        x0 = gen_wn(x.shape, x0_mean, x0_var ** 0.5)
+            x0 = gen_wn(x.shape, x0_mean, x0_var ** 0.5)
 
         # init loss, solver and convergence criterium
         loss = MSELossScat()
@@ -673,6 +680,8 @@ class GenDataLoader(ProcessDataLoader):
     def worker(self, i, **kwargs):
         cuda = kwargs['optim_params']['cuda']
         gpus = kwargs['optim_params']['gpus']
+        seed = kwargs['optim_params']['seed'][i]
+        kwargs['seed'] = seed
         if cuda and gpus is None:
             kwargs['gpu'] = '0'
         elif gpus is not None:
@@ -694,6 +703,7 @@ def generate(x, Rx=None, S=1,
              qs=None,
              nchunks=1, it=10000,
              tol_optim=5e-4,
+             seed=None, x0=None,
              generated_dir=None, exp_name=None,
              cuda=False, gpus=None, num_workers=1):
     """ Generate new realizations of x from a scattering covariance model.
@@ -713,6 +723,8 @@ def generate(x, Rx=None, S=1,
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param it: maximum number of gradient descent iteration
     :param tol_optim: error below which gradient descent stops
+    :param seed: None, int or list, random seed of original white noise in gradient descent for each synthesis
+    :param x0: an array of shape (B, N, T) for the initial signal in the gradient descent
     :param generated_dir: the directory in which the generated dir will be located
     :param exp_name: experience name
     :param cuda: does calculation on gpu
@@ -740,10 +752,14 @@ def generate(x, Rx=None, S=1,
         wav_norm = [wav_norm] * r
     if isinstance(high_freq, float):
         high_freq = [high_freq] * r
+    if seed is None or isinstance(seed, int):
+        seed = [seed] * S
     if qs is None:
         qs = [1.0, 2.0]
     if generated_dir is None:
         generated_dir = Path(__file__).parents[0] / '_cached_dir'
+    if x0 is not None and x0.shape != x.shape:
+        raise ValueError(f"If specified, x0 should be of shape {x.shape}")
 
     # use a GenDataLoader to cache trajectories
     dtld = GenDataLoader(exp_name or 'gen_scat_cov', generated_dir, num_workers)
@@ -770,11 +786,15 @@ def generate(x, Rx=None, S=1,
         'maxfun': 2e6,
         'method': 'L-BFGS-B',
         'jac': True,  # origin of gradient, True: provided by solver, else estimated
-        'tol_optim': tol_optim
+        'tol_optim': tol_optim,
+        'seed': seed,
+        'x0': x0
     }
 
     # multi-processed generation
-    x_gen = dtld.load(R=S, n_files=int(np.ceil(S/B)), x=x, Rx=Rx, model_params=model_params, optim_params=optim_params).x
+    x_gen = dtld.load(R=S, n_files=int(np.ceil(S/B)), x=x, Rx=Rx,
+                      model_params=model_params,
+                      optim_params=optim_params).x
 
     return x_gen
 
@@ -812,6 +832,31 @@ def get_variance(z):
     """ Compute complex variance of a sequence of complex numbers z1, z2, ... """
     B = z.shape[0]
     return torch.abs(z - z.mean(0, keepdim=True)).pow(2.0).sum(0).div(B-1).div(B)
+
+
+def plot_raw(Rx, ax, legend=False):
+    """ Raw plot of the coefficients contained in Rx. """
+    if 'j' in Rx.descri.columns or 'j2' not in Rx.descri.columns:
+        raise ValueError("Raw plot of DescribedTensor only implemented for ouput of cov model.")
+    descri = Description(Rx.descri.reindex(columns=['c_type', 'real', 'low',
+                                                    'nl', 'nr', 'q', 'rl', 'rr', 'scl', 'scr',
+                                                    'jl1', 'jr1', 'j2', 'al', 'ar']))
+    Rx = DescribedTensor(x=None, descri=descri, y=Rx.y)
+    if Rx.y.is_complex():
+        Rx = format_to_real(Rx)
+    Rx = Rx.mean_batch().sort()
+
+    colors = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 'red', 'purple']
+    for color, ctype in zip(colors, descri['c_type'].unique()):
+        mask_real = np.where(Rx.descri.where(c_type=ctype, real=True))[0]
+        mask_imag = np.where(Rx.descri.where(c_type=ctype, real=False))[0]
+        ax.axvspan(mask_real.min(), mask_real.max(), color=color, label=ctype if legend else None, alpha=0.7)
+        if mask_imag.size > 0:
+            ax.axvspan(mask_imag.min(), mask_imag.max(), color=color, alpha=0.4)
+    ax.plot(Rx.y[0,:,0], linewidth=0.7)
+    if legend:
+        ax.legend()
+    return Rx.descri
 
 
 def plot_marginal_moments(Rxs, estim_bar=False,
@@ -900,7 +945,7 @@ def plot_marginal_moments(Rxs, estim_bar=False,
 
 
 def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, theta_threshold=0.005,
-                                 axes=None, labels=None, fontsize=30, single_plot=False, ylim=0.09, title=True):
+                                 axes=None, labels=None, fontsize=30, single_plot=False, ylim=0.09):
     """ Plot the phase-envelope cross-spectrum C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
 
     :param Rxs: DescribedTensor or list of DescribedTensor
@@ -912,7 +957,6 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
     :param fontsize: labels fontsize
     :param single_plot: output all DescribedTensor on a single plot
     :param ylim: above y limit of modulus graph
-    :param title: put title on each graph
     :return:
     """
     if isinstance(Rxs, DescribedTensor):

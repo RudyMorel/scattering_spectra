@@ -6,7 +6,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from scatcov.utils import df_product
 from scatcov.layers.scale_indexer import ScaleIndexer
 from scatcov.layers.described_tensor import Description
 

@@ -191,8 +191,8 @@ class CheckConvCriterion:
             + f" -- maxpct {cap(max(self.max_gap_pct.values())):.3%} -- gerr {self.gerr:.2E}",
             'cyan'))
         print(colored(
-            "".join([f"\n -- {c_type:<15} max {value:.2e} -- meanpct {cap(self.mean_gap_pct[c_type]):.3%} "
-                     + f"-- maxpct {cap(self.max_gap_pct[c_type]):.3%}, "
+            "".join([f"\n -- {c_type:<15} max {value:.2e} -- meanpct {cap(self.mean_gap_pct[c_type]):.2%} "
+                     + f"-- maxpct {cap(self.max_gap_pct[c_type]):.1%}, "
                      for c_type, value in self.max_gap.items()])
             + msg,
             'green'))
