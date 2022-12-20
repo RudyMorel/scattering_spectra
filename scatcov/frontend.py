@@ -91,6 +91,7 @@ class Model(nn.Module):
                  N,
                  sigma2, norm_on_the_fly,
                  estim_operator,
+                 c_types_used,
                  cov_chunk,
                  dtype):
         super(Model, self).__init__()
@@ -129,7 +130,7 @@ class Model(nn.Module):
         self.description = self.build_description()
 
         self.c_types = None if "c_type" not in self.description.columns else self.description.c_type.unique().tolist()
-        self.c_types_used = c_types
+        self.c_types_used = c_types_used or c_types
 
         # cast model to the right precision
         if dtype == torch.float64:
@@ -180,7 +181,7 @@ class Model(nn.Module):
 
         return df
 
-    def build_description_marginal_moments(self, N):
+    def build_description_q1_moments(self, N):
         """ Assemble the description of averages E{Wx} and E{|Wx|}. """
         df = self.build_descri_scattering_network(N)
         df = df.query("r==1")
@@ -225,14 +226,14 @@ class Model(nn.Module):
 
         elif self.model_type == 'cov':
 
-            df_r1 = self.build_description_marginal_moments(self.N)
+            df_r1 = self.build_description_q1_moments(self.N)
             df_r2 = self.build_description_correlation(self.N, self.sc_idxer)
 
             df = pd.concat([df_r1, df_r2])
 
         elif self.model_type == 'covreduced':
 
-            df_r1 = self.build_description_marginal_moments(self.N)
+            df_r1 = self.build_description_q1_moments(self.N)
             df_r2 = self.build_description_correlation(self.N, self.sc_idxer)
 
             # ps and low pass of phaseenv and envelope
@@ -251,7 +252,7 @@ class Model(nn.Module):
 
         elif self.model_type == 'scat+cov':
 
-            df_exp = self.build_description_marginal_moments(self.N)
+            df_exp = self.build_description_q1_moments(self.N)
 
             df_scat = self.build_descri_scattering_network(self.N)
             df_scat = df_scat[df_scat['r'] == 2]
@@ -361,7 +362,7 @@ class Model(nn.Module):
         Rx = DescribedTensor(x=None, y=y, descri=self.description)
 
         if self.c_types_used is not None:
-            return y.reduce(c_type=self.c_types_used)
+            return Rx.reduce(c_type=self.c_types_used)
 
         return Rx
 
@@ -369,6 +370,7 @@ class Model(nn.Module):
 def init_model(model_type, B, N, T, r, J, Q, wav_type, high_freq, wav_norm,
                qs,
                sigma2, norm_on_the_fly,
+               c_types_used,
                estim_operator,
                nchunks, dtype):
     """ Initialize a scattering covariance model.
@@ -391,6 +393,7 @@ def init_model(model_type, B, N, T, r, J, Q, wav_type, high_freq, wav_norm,
     :param qs: if model_type == 'scat' the exponents of the scattering marginal moments
     :param sigma2: a tensor of size B x N x J, wavelet power spectrum to normalize the representation with
     :param norm_on_the_fly: normalize first wavelet layer on the fly
+    :param c_types_used: coefficient types used (None will use all of them)
     :param estim_operator: estimation operator to use
     :param nchunks: the number of chunks
     :param dtype: data precision, either float32 or float64
@@ -410,6 +413,7 @@ def init_model(model_type, B, N, T, r, J, Q, wav_type, high_freq, wav_norm,
                   N,
                   sigma2, norm_on_the_fly,
                   estim_operator,
+                  c_types_used,
                   cov_chunk,
                   dtype)
     model = ChunkedModule(model, batch_chunk)
@@ -417,14 +421,15 @@ def init_model(model_type, B, N, T, r, J, Q, wav_type, high_freq, wav_norm,
     return model
 
 
-def compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, cuda):
+def compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, nchunks, cuda):
     """ Computes power specturm sigma(j)^2 used to normalize scattering coefficients. """
     marginal_model = init_model(model_type='scat', B=x.shape[0], N=x.shape[1], T=x.shape[-1], r=1, J=J, Q=Q,
                                 wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
                                 qs=[2.0],
                                 sigma2=None, norm_on_the_fly=False,
+                                c_types_used=None,
                                 estim_operator=None,
-                                nchunks=1, dtype=x.dtype)
+                                nchunks=nchunks, dtype=x.dtype)
     if cuda:
         x = x.cuda()
         marginal_model = marginal_model.cuda()
@@ -436,7 +441,7 @@ def compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, cuda):
 
 def analyze(x, model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
             qs=None,
-            normalize=None, keep_ps=False,
+            normalize=None, keep_ps=False, sigma2=None,
             estim_operator=None,
             nchunks=1, cuda=False):
     """ Compute scattering based model.
@@ -505,8 +510,8 @@ def analyze(x, model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wa
 
     # covreduced needs a spectrum normalization
     sigma2 = None
-    if normalize is not None:
-        sigma2 = compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, cuda)
+    if normalize is not None and sigma2 is None:
+        sigma2 = compute_sigma2(x, J, Q, wav_type, high_freq, wav_norm, nchunks, cuda)
         if normalize == "batch_ps":
             sigma2 = sigma2.mean(0, keepdim=True)
 
@@ -514,8 +519,9 @@ def analyze(x, model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wa
     model = init_model(model_type=model_type, B=B, N=N, T=T, r=r,
                        J=J, Q=Q, wav_type=wav_type, high_freq=high_freq, wav_norm=wav_norm,
                        qs=qs,
-                       sigma2=sigma2, norm_on_the_fly=normalize == "each_ps",
+                       sigma2=sigma2, norm_on_the_fly=normalize=="each_ps",
                        estim_operator=estim_operator,
+                       c_types_used=None,
                        nchunks=nchunks, dtype=dtype)
 
     # compute
@@ -536,12 +542,7 @@ def analyze(x, model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wa
 
 
 def format_to_real(Rx):
-    """
-    Transforms a complex described tensor into a real tensor by correctly handling real and non-real coefficients.
-
-    :param Rx: DescribedTensor
-    :return: DescribedTensor that possess a real column which indicates real part or imaginary part
-    """
+    """ Transforms a complex described tensor z into a real tensor (Re z, Im z). """
     if "real" not in Rx.descri:
         raise ValueError("Described tensor should have a column indicating which coefficients are real.")
     Rx_real = Rx.reduce(real=True)
@@ -555,6 +556,93 @@ def format_to_real(Rx):
     y = torch.cat([Rx_real.y.real, Rx_complex.y.real, Rx_complex.y.imag], dim=1)
 
     return DescribedTensor(None, y, descri)
+
+
+def self_simi_obstruction_score(x, J=None, Q=1,
+                                wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
+                                nchunks=1, cuda=False):
+    """ Quantifies obstruction to self-similarity in a certain range of scales.
+
+    :param x: an array of shape (T, ) or (B, T) or (B, N, T)
+    :param J: number of octaves for each wavelet layer
+    :param Q: number of scales per octave for each wavelet layer
+    :param wav_type: wavelet types for each wavelet layer
+    :param wav_norm: wavelet normalization i.e. l1, l2 for each layer
+    :param high_freq: central frequency of mother wavelet for each layer, 0.5 gives important aliasing
+    :param nchunks: nb of chunks, increase it to reduce memory usage
+    :param cuda: does calculation on gpu
+
+    :return:
+        - score on white noise reference (gives the score estimation error)
+        - score on x
+    """
+    Rx = analyze(x, model_type='cov', r=2, J=J, Q=Q,
+                 wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
+                 qs=None,
+                 normalize="batch_ps", keep_ps=True, sigma2=None,
+                 estim_operator=None,
+                 nchunks=nchunks, cuda=cuda).mean_batch()
+
+    # white noise reference score
+    x_wn = np.random.randn(*x.shape)
+    Rx_wn = analyze(x_wn, model_type='cov', r=2, J=J, Q=Q,
+                    wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
+                    qs=None,
+                    normalize="batch_ps", keep_ps=True, sigma2=None,
+                    estim_operator=None,
+                    nchunks=nchunks, cuda=cuda).mean_batch()
+
+    def self_simi_score_spars(Rx):
+        Wx1 = Rx.select(c_type='spars', low=False)[0, :, 0]
+        logWxs = Wx1.pow(2.0).log2()
+        dlogWxs = torch.diff(logWxs)
+        return 1e1 * dlogWxs.std().numpy().item()
+
+    def self_simi_score_ps(Rx):
+        logWx2 = Rx.select(c_type='ps', low=False)[0, :, 0].log2()
+        dlogWx2 = torch.diff(logWx2)
+        return 2e1 * dlogWx2.std().numpy().item()
+
+    def self_simi_score_phase_mod(Rx):
+        J = Rx.descri.j.max() if 'j' in Rx.descri.columns else Rx.descri.jl1.max()
+
+        score = 0.0
+        for a in range(1, J - 1):
+            phi3 = torch.stack([Rx.select(c_type='phaseenv', jl1=j1, jr1=j1 - a, low=False)[0, 0, 0]
+                                for j1 in range(a, J)])
+            score += phi3.std()
+
+        return 1e1 * score.numpy() / (J - 1)
+
+    def self_simi_score_mod(Rx):
+        J = Rx.descri.j.max() if 'j' in Rx.descri.columns else Rx.descri.jl1.max()
+
+        ndiagonals = 0
+        score = 0.0
+        for (a, b) in product(range(J - 1), range(-J + 1, 0)):
+            if a - b >= J - 1:
+                continue
+            phi4 = torch.stack([Rx.select(c_type='envelope', jl1=j1, jr1=j1 - a, j2=j1 - b, low=False)[0, 0, 0]
+                                for j1 in range(a, J + b)])
+            ndiagonals += 1
+            score += phi4.std()
+
+        return 1e2 * score.numpy() / ndiagonals
+
+    def get_score(Rx):
+        score_phi1 = self_simi_score_spars(Rx)
+        score_phi2 = self_simi_score_ps(Rx)
+        score_phi3 = self_simi_score_phase_mod(Rx)
+        score_phi4 = self_simi_score_mod(Rx)
+        return {
+            'spars': score_phi1,
+            'ps': score_phi2,
+            'phaseenv': score_phi3,
+            'envelope': score_phi4,
+            'total': score_phi1 + score_phi2 + score_phi3 + score_phi4
+        }
+
+    return get_score(Rx_wn), get_score(Rx)
 
 
 ##################
@@ -592,20 +680,20 @@ class GenDataLoader(ProcessDataLoader):
         # sigma = None
         sigma2 = compute_sigma2(x_torch, model_params['J'], model_params['Q'],
                                 model_params['wav_type'], model_params['high_freq'], model_params['wav_norm'],
-                                optim_params['cuda'])
+                                model_params['nchunks'], optim_params['cuda'])
         model_params['sigma2'] = sigma2.mean(0, keepdim=True)  # do a "batch_ps" normalization
 
         # initialize model
         print("Initialize model")
         model = init_model(B=x.shape[0], **model_params)
-        if gpu is not None:
+        if optim_params['cuda'] and gpu is not None:
             x_torch = x_torch.cuda()
             model = model.cuda()
 
         # prepare target representation
         if Rx is None:
             print("Preparing target representation")
-            Rx = model(x_torch).mean_batch().cpu()
+            Rx = model(x_torch).cpu()
 
         # prepare initial gaussian process
         if optim_params['x0'] is not None:
@@ -684,7 +772,7 @@ class GenDataLoader(ProcessDataLoader):
         kwargs['seed'] = seed
         if cuda and gpus is None:
             kwargs['gpu'] = '0'
-        elif gpus is not None:
+        elif cuda and gpus is not None:
             kwargs['gpu'] = str(gpus[i % len(gpus)])
         else:
             kwargs['gpu'] = None
@@ -701,6 +789,7 @@ class GenDataLoader(ProcessDataLoader):
 def generate(x, Rx=None, S=1,
              model_type='cov', r=2, J=None, Q=1, wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
              qs=None,
+             c_types_used=None,
              nchunks=1, it=10000,
              tol_optim=5e-4,
              seed=None, x0=None,
@@ -720,6 +809,7 @@ def generate(x, Rx=None, S=1,
     :param high_freq: central frequency of mother wavelet, 0.5 gives important aliasing
     :param model_type: moments to compute on scattering, ex: None, 'scat', 'cov', 'covreduced'
     :param qs: if model_type == 'marginal' the exponents of the scattering marginal moments
+    :param c_types_used: coefficient types used (None will use all of them)
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param it: maximum number of gradient descent iteration
     :param tol_optim: error below which gradient descent stops
@@ -772,6 +862,7 @@ def generate(x, Rx=None, S=1,
         'wav_norm': wav_norm,
         'model_type': model_type, 'qs': qs,
         'sigma2': None, 'norm_on_the_fly': False,
+        'c_types_used': c_types_used,
         'nchunks': nchunks,
         'estim_operator': None,
         'dtype': torch.float64 if x.dtype == np.float64 else torch.float32
@@ -780,7 +871,7 @@ def generate(x, Rx=None, S=1,
     # OPTIM params
     optim_params = {
         'it': it,
-        'cuda': cuda or (gpus is not None),
+        'cuda': cuda,
         'gpus': gpus,
         'relative_optim': False,
         'maxfun': 2e6,
@@ -841,19 +932,21 @@ def plot_raw(Rx, ax, legend=False):
     descri = Description(Rx.descri.reindex(columns=['c_type', 'real', 'low',
                                                     'nl', 'nr', 'q', 'rl', 'rr', 'scl', 'scr',
                                                     'jl1', 'jr1', 'j2', 'al', 'ar']))
-    Rx = DescribedTensor(x=None, descri=descri, y=Rx.y)
+    Rx = DescribedTensor(x=None, descri=descri, y=Rx.y).mean_batch()
     if Rx.y.is_complex():
         Rx = format_to_real(Rx)
-    Rx = Rx.mean_batch().sort()
+    Rx = Rx.sort()
+    ctypes = Rx.descri['c_type'].unique()
 
-    colors = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 'red', 'purple']
-    for color, ctype in zip(colors, descri['c_type'].unique()):
+    cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    for i, ctype in enumerate(ctypes):
         mask_real = np.where(Rx.descri.where(c_type=ctype, real=True))[0]
         mask_imag = np.where(Rx.descri.where(c_type=ctype, real=False))[0]
-        ax.axvspan(mask_real.min(), mask_real.max(), color=color, label=ctype if legend else None, alpha=0.7)
+        ax.axvspan(mask_real.min(), mask_real.max(), color=cycle[i], label=ctype if legend else None, alpha=0.7)
         if mask_imag.size > 0:
-            ax.axvspan(mask_imag.min(), mask_imag.max(), color=color, alpha=0.4)
-    ax.plot(Rx.y[0,:,0], linewidth=0.7)
+            ax.axvspan(mask_imag.min(), mask_imag.max(), color=cycle[i], alpha=0.4)
+        ax.axhline(0.0, color='black', linewidth=0.02)
+    ax.plot(Rx.y[0, :, 0], linewidth=0.7)
     if legend:
         ax.legend()
     return Rx.descri
@@ -883,14 +976,7 @@ def plot_marginal_moments(Rxs, estim_bar=False,
     labels = labels or [''] * len(Rxs)
     axes = None if axes is None else axes.ravel()
 
-    def get_data(Rx, q):
-        Wx_nj = Rx.select(rl=1, c_type=['ps', 'scat', 'spars', 'marginal'], q=q, low=False)[:, :, 0]
-        if Wx_nj.is_complex():
-            Wx_nj = Wx_nj.real
-        logWx_nj = torch.log2(Wx_nj)
-        return logWx_nj
-
-    def plot_exponent(js, i_ax, ax, label, color, y, y_err):
+    def plot_exponent(js, ax, label, color, y, y_err):
         plt.sca(ax)
         plt.plot(-js, y, label=label, linewidth=linewidth, color=color)
         if not estim_bar:
@@ -899,11 +985,6 @@ def plot_marginal_moments(Rxs, estim_bar=False,
             eb = plt.errorbar(-js, y, yerr=y_err, capsize=4, color=color, fmt=' ')
             eb[-1][0].set_linestyle('--')
         plt.yscale('log', base=2)
-        a, b = ax.get_ylim()
-        if i_ax == 0:
-            ax.set_ylim(min(a, 2**(-2)), max(b, 2**2))
-        else:
-            ax.set_ylim(min(2**(-2), a), 1.0)
         plt.xlabel(r'$-j$', fontsize=fontsize)
         plt.yticks(fontsize=fontsize)
         plt.xticks(-js, [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
@@ -922,36 +1003,52 @@ def plot_marginal_moments(Rxs, estim_bar=False,
         has_sparsity = 1.0 in Rx.descri.q.values
 
         # averaging on the logs may have strange behaviors because of the strict convexity of the log
-        # if you prefer to look at the log of the mean, then to a .mean_batch() on the representation before ploting it
         if has_power_spectrum:
-            logWx2_n = get_data(Rx, 2.0)
+            Wx2_nj = Rx.select(rl=1, c_type=['ps', 'scat', 'spars', 'marginal'], q=2.0, low=False)[:, :, 0]
+            if Wx2_nj.is_complex():
+                Wx2_nj = Wx2_nj.real
+            logWx2_n = torch.log2(Wx2_nj)
+
+            # little subtlety here, we plot the log on the mean but the variance is the variance on the log
             logWx2_err = get_variance(logWx2_n) ** 0.5
-            logWx2 = logWx2_n.mean(0)
+            logWx2 = torch.log2(Wx2_nj.mean(0))
             logWx2 -= logWx2[-1].item()
-            plot_exponent(js, 0, axes[0], lb, COLORS[i_lb], 2.0 ** logWx2, np.log(2) * logWx2_err * 2.0 ** logWx2)
+            plot_exponent(js, axes[0], lb, COLORS[i_lb], 2.0 ** logWx2, np.log(2) * logWx2_err * 2.0 ** logWx2)
+            a, b = axes[0].get_ylim()
+            if i_lb == len(labels):
+                axes[0].set_ylim(min(a, 2 ** (-2)), max(b, 2 ** 2))
             if i_lb == len(labels) - 1 and any([lb != '' for lb in labels]):
                 plt.legend(prop={'size': 15})
-            plt.title('Wavelet Spectrum', fontsize=fontsize)
+            plt.title(r'Wavelet Spectrum $\Phi_2$', fontsize=fontsize)
 
             if has_sparsity:
-                logWx1_n = get_data(Rx, 1.0)
-                logWxs_n = 2 * logWx1_n - logWx2_n.mean(0, keepdims=True)
+                Wx1_nj = Rx.select(rl=1, c_type=['ps', 'scat', 'spars', 'marginal'], q=1.0, low=False)[:, :, 0]
+                if Wx1_nj.is_complex():
+                    Wx1_nj = Wx1_nj.real
+                logWx1_nj = torch.log2(Wx1_nj)
+
+                logWxs_n = 2 * logWx1_nj - logWx2_n.mean(0, keepdims=True)
                 logWxs_err = get_variance(logWxs_n) ** 0.5
-                logWxs = logWxs_n.mean(0)
-                plot_exponent(js, 1, axes[1], lb, COLORS[i_lb], 2.0 ** logWxs, np.log(2) * logWxs_err * 2.0 ** logWxs)
+                logWxs = torch.log2(Wx1_nj.mean(0).pow(2.0) / Wx2_nj.mean(0))
+                plot_exponent(js, axes[1], lb, COLORS[i_lb], 2.0 ** logWxs, np.log(2) * logWxs_err * 2.0 ** logWxs)
+                a, b = axes[1].get_ylim()
+                if i_lb == len(labels) - 1:
+                    axes[1].set_ylim(min(2 ** (-2), a), 1.0)
                 if i_lb == len(labels) - 1 and any([lb != '' for lb in labels]):
                     plt.legend(prop={'size': 15})
-                plt.title('Sparsity factor', fontsize=fontsize)
+                plt.title(r'Sparsity factors $\Phi_1$', fontsize=fontsize)
 
 
 def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, theta_threshold=0.005,
-                                 axes=None, labels=None, fontsize=30, single_plot=False, ylim=0.09):
+                                 sigma2=None,
+                                 axes=None, labels=None, fontsize=30, single_plot=False, ylim=0.1):
     """ Plot the phase-envelope cross-spectrum C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
 
     :param Rxs: DescribedTensor or list of DescribedTensor
     :param estim_bar: display estimation error due to estimation on several realizations
     :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
     :param theta_threshold: rules phase instability
+    :param sigma2: override normalization factors
     :param axes: custom axes: array of size 2
     :param labels: list of labels for each model output
     :param fontsize: labels fontsize
@@ -983,7 +1080,11 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
 
         B = Rx.y.shape[0]
 
-        sigma2 = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0, keepdim=True)[:, :, 0]
+        norm2 = sigma2
+        if sigma2 is None:
+            norm2 = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0)[None, :, 0]  # power spectrum averaged on batch
+            if Rx.descri['nl'].iloc[0] != Rx.descri['nr'].iloc[0]:
+                print("WARNING. Carefull, sigma2 should be given for left and right independently.")
 
         for a in range(1, J):
             if model_type == 'covreduced':
@@ -998,7 +1099,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
                 for j1 in range(a, J):
                     coeff = Rx.select(c_type='phaseenv', jl1=j1, jr1=j1-a, low=False)
                     coeff = coeff[:, 0, 0]
-                    coeff /= sigma2[:, j1, ...].pow(0.5) * sigma2[:, j1-a, ...].pow(0.5)
+                    coeff /= norm2[:, j1, ...].pow(0.5) * norm2[:, j1-a, ...].pow(0.5)
                     c_mwm_nj[:, j1-a] = coeff
 
                 # the mean in j of the variance of time estimators
@@ -1027,7 +1128,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
             plot_x_offset = 0.07 if self_simi_bar else 0.0
             eb = plt.errorbar(a_s + plot_x_offset, y, yerr=y_err_estim, capsize=4, color=color, fmt=' ')
             eb[-1][0].set_linestyle('--')
-        plt.title("Phase-Env spectrum \n (Modulus)", fontsize=fontsize)
+        plt.title('Cross-spectrum' + '\n' + r'$|\Phi_3|$', fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
         plt.xticks(np.arange(1, J),
                    [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
@@ -1055,7 +1156,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
                    [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$'], fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
         plt.xlabel(r'$a$', fontsize=fontsize)
-        plt.title("Phase-Env spectrum \n (Phase)", fontsize=fontsize)
+        plt.title('Cross-spectrum' + '\n' +  r'Arg$\Phi_3$', fontsize=fontsize)
 
     if axes is None:
         plt.figure(figsize=(5, 10) if single_plot else (len(labels) * 5, 10))
@@ -1080,6 +1181,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
 
 
 def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, theta_threshold=0.01,
+                             sigma2=None,
                              axes=None, labels=None, fontsize=40, ylim=2.0, d=1):
     """ Plot the scattering cross-spectrum C_S(a,b) as two graphs : |C_S| and Arg(C_S).
 
@@ -1087,6 +1189,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
     :param estim_bar: display estimation error due to estimation on several realizations
     :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
     :param theta_threshold: rules phase instability
+    :param sigma2: override normalization factors
     :param axes: custom axes: array of size 2 x labels
     :param labels: list of labels for each model output
     :param fontsize: labels fontsize
@@ -1126,7 +1229,11 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
 
         B = Rx.y.shape[0]
 
-        sigma2 = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0, keepdim=True)[:, :, 0]
+        norm2 = sigma2
+        if sigma2 is None:
+            norm2 = Rx.select(rl=1, rr=1, q=2, low=False).real.mean(0)[None, :, 0]  # power spectrum averaged on batch
+            if Rx.descri['nl'].iloc[0] != Rx.descri['nr'].iloc[0]:
+                print("WARNING. Carefull, sigma2 should be given for left and right independently.")
 
         for (a, b) in product(range(J-1), range(-J+1, 0)):
             if a - b >= J:
@@ -1142,7 +1249,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
                 for j1 in range(a, J+b):
                     coeff = Rx.select(c_type='envelope', jl1=j1, jr1=j1-a, j2=j1-b, low=False)
                     coeff = coeff[:, 0, 0]
-                    coeff /= sigma2[:, j1, ...].pow(0.5) * sigma2[:, j1 - a, ...].pow(0.5)
+                    coeff /= norm2[:, j1, ...].pow(0.5) * norm2[:, j1 - a, ...].pow(0.5)
                     cs_nj[:, j1 - a] = coeff
 
                 cs_j = cs_nj.mean(0)
@@ -1175,7 +1282,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
     for z_arg in [cs_arg, err_self_simi_arg, err_estim_arg]:
         z_arg[cs_mod < theta_threshold] = 0.0
 
-    def plot_modulus(label, y, y_err_estim, y_err_self_simi):
+    def plot_modulus(label, y, y_err_estim, y_err_self_simi, title):
         for a in range(J-1):
             bs = np.arange(-J+1+a, 0)
             line = plt.plot(bs, y[a, a:], label=label if a == 0 else '')
@@ -1200,11 +1307,12 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
         plt.yticks(fontsize=fontsize)
         plt.locator_params(axis='x', nbins=J - 1)
         plt.locator_params(axis='y', nbins=5)
-        plt.title("Scattering spectrum \n (Modulus)", fontsize=fontsize)
+        if title:
+            plt.title('Cross-spectrum' + '\n' + r'$|\Phi_4|$', fontsize=fontsize)
         if label != '':
             plt.legend(prop={'size': 15})
 
-    def plot_phase(y, y_err_estim, y_err_self_simi):
+    def plot_phase(y, y_err_estim, y_err_self_simi, title):
         for a in range(J-1):
             bs = np.arange(-J+1+a, 0)
             line = plt.plot(bs, y[a, a:], label=fr'$a={a}$')
@@ -1227,7 +1335,8 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
                    fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
         plt.xlabel(r'$b$', fontsize=fontsize)
-        plt.title("Scattering spectrum \n (Phase)", fontsize=fontsize)
+        if title:
+            plt.title('Cross-spectrum' + '\n' + r'$Arg \Phi_4$', fontsize=fontsize)
 
     if axes is None:
         plt.figure(figsize=(max(len(labels), 5) * 3, 10))
@@ -1239,7 +1348,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
             ax_mod = plt.subplot2grid((2, np.unique(i_graphs).size), (0, i_graphs[i_lb]))
         ax_mod.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
         ax_mod.yaxis.set_label_coords(-0.18, 0.5)
-        plot_modulus(lb, cs_mod[i_lb], err_estim[i_lb], err_self_simi[i_lb])
+        plot_modulus(lb, cs_mod[i_lb], err_estim[i_lb], err_self_simi[i_lb], i_lb == 0)
 
     for i_lb, lb in enumerate(labels):
         if axes is not None:
@@ -1247,7 +1356,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
             ax_ph = axes[1, i_lb]
         else:
             ax_ph = plt.subplot2grid((2, np.unique(i_graphs).size), (1, i_graphs[i_lb]))
-        plot_phase(cs_arg[i_lb], err_estim_arg[i_lb], err_self_simi_arg[i_lb])
+        plot_phase(cs_arg[i_lb], err_estim_arg[i_lb], err_self_simi_arg[i_lb], i_lb == 0)
         if i_lb == 0:
             ax_ph.yaxis.set_tick_params(which='major', direction='in', width=1.5, length=7)
 
@@ -1260,7 +1369,8 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
 
 
 def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, theta_threshold=None,
-                   labels=None, linewidth=3.0, fontsize=20, ylim_phase=0.09, ylim_modulus=2.0, figsize=None, axes=None):
+                   sigma2=None,
+                   labels=None, linewidth=3.0, fontsize=20, ylim_phase=0.1, ylim_modulus=3.0, figsize=None, axes=None):
     """ Plot the scattering covariance dashboard for multi-scale processes composed of:
         - (wavelet power spectrum) sigma^2(j)
         - (sparsity factors) s^2(j)
@@ -1272,6 +1382,7 @@ def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, th
     :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
     :param bootstrap: time variance computation method
     :param theta_threshold: rules phase instability
+    :param sigma2: override normalization factors
     :param labels: list of labels for each model output
     :param linewidth: lines linewidth
     :param fontsize: labels fontsize
@@ -1294,15 +1405,17 @@ def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, th
                              "univariate or single pair.")
 
     if axes is None:
-        _, axes = plt.subplots(2, 2 + len(Rxs), figsize=figsize or (10 + 5 * (len(Rxs) - 1), 10))
+        _, axes = plt.subplots(2, 2 + len(Rxs), figsize=figsize or (12+2*(len(Rxs)-1),8))
 
     # marginal moments sigma^2 and s^2
     plot_marginal_moments(Rxs, estim_bar, axes[:, 0], labels, linewidth, fontsize)
 
     # phase-envelope cross-spectrum
-    plot_phase_envelope_spectrum(Rxs, estim_bar, self_simi_bar, theta_threshold[0], axes[:, 1], labels, fontsize, False, ylim_phase)
+    plot_phase_envelope_spectrum(Rxs, estim_bar, self_simi_bar, theta_threshold[0], sigma2,
+                                 axes[:, 1], labels, fontsize, False, ylim_phase)
 
     # scattering cross spectrum
-    plot_scattering_spectrum(Rxs, estim_bar, self_simi_bar, bootstrap, theta_threshold[1], axes[:, 2:], labels, fontsize, ylim_modulus)
+    plot_scattering_spectrum(Rxs, estim_bar, self_simi_bar, bootstrap, theta_threshold[1], sigma2,
+                             axes[:, 2:], labels, fontsize, ylim_modulus)
 
     plt.tight_layout()

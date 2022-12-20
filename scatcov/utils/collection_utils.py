@@ -56,6 +56,16 @@ def dfs_edges(g, source=None, depth_limit=None):
                 stack.pop()
 
 
+def dfs_tree(g, source=None, depth_limit=None):
+    u = nx.DiGraph()
+    if source is None:
+        u.add_nodes_from(g)
+    else:
+        u.add_nodes_from(source)
+    u.add_edges_from(dfs_edges(g, source, depth_limit))
+    return u
+
+
 def concat_list(a: List[List]) -> List:
     return list(itertools.chain.from_iterable(a))
 
@@ -113,3 +123,11 @@ def df_product_channel_single(df: pd.DataFrame, N: int, method: str) -> pd.DataF
         raise ValueError("Unrecognized channel product method.")
 
     return df_product(df_n, df)
+
+
+def df_product_channel_double(df: pd.DataFrame, Nl: int, Nr: int) -> pd.DataFrame:
+    """ Pandas cartesian product [0, ..., Nl - 1] x [0, ..., Nr - 1] x df """
+    df_nl = pd.DataFrame(np.arange(Nl), columns=['nl'])
+    df_nr = pd.DataFrame(np.arange(Nr), columns=['nr'])
+
+    return df_product(df_nl, df_nr, df)

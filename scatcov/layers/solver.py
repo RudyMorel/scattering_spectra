@@ -59,10 +59,10 @@ class Solver(nn.Module):
             Rxf = Rxf.cuda()
 
         # compute target representation Rxf
-        self.Rxf = Rxf
+        self.Rxf = Rxf.mean_batch()
 
         # compute initial loss
-        Rx0 = self.model(self.format(x0, requires_grad=False))
+        Rx0 = self.model(self.format(x0, requires_grad=False)).mean_batch()
         self.loss0 = self.loss(Rx0, self.Rxf, None, None).detach().cpu().numpy()
 
     def format(self, x: np.ndarray, requires_grad: Optional[bool] = True) -> torch.tensor:
@@ -88,7 +88,7 @@ class Solver(nn.Module):
 
         # compute moments
         # self.time_tracker.start('forward')
-        Rxt = self.model(x_torch)
+        Rxt = self.model(x_torch).mean_batch()
 
         # compute loss function
         # self.time_tracker.start('loss')
