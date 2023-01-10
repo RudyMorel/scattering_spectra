@@ -163,11 +163,19 @@ class DescribedTensor:
             d[val].append(i)
         return torch.stack([out_non_pivot.y[:, val, ...] for val in d.values()])
 
-    def reduce(self, mask: Optional[np.ndarray[bool]] = None, b: Optional[int] = None, **kwargs) -> DescribedTensor:
+    def reduce(self, mask: Optional[np.ndarray[bool]] = None,
+               b: Optional[int, list, np.ndarray] = None, **kwargs) -> DescribedTensor:
         """ Return a subtensor along with its description. """
         mask = self.descri.where(**kwargs) if mask is None else mask
-        reduced_b = self.y if b is None else self.y[b:b+1, ...]
-        return DescribedTensor(self.x, reduced_b[:, mask, ...], self.descri.reduce(mask))
+        x_reduced = self.x
+        y_reduced = self.y
+        if b is not None:
+            if isinstance(b, int):
+                b = np.array([b])
+            if self.x is not None:
+                x_reduced = self.x[b, ...]
+            y_reduced = self.y[b, ...]
+        return DescribedTensor(x_reduced, y_reduced[:, mask, ...], self.descri.reduce(mask))
 
     def copy(self) -> DescribedTensor:
         """ Return a copy of self. """

@@ -1012,7 +1012,7 @@ def plot_marginal_moments(Rxs, estim_bar=False,
             # little subtlety here, we plot the log on the mean but the variance is the variance on the log
             logWx2_err = get_variance(logWx2_n) ** 0.5
             logWx2 = torch.log2(Wx2_nj.mean(0))
-            logWx2 -= logWx2[-1].item()
+            # logWx2 -= logWx2[-1].item()  # do not normalize marginal moments
             plot_exponent(js, axes[0], lb, COLORS[i_lb], 2.0 ** logWx2, np.log(2) * logWx2_err * 2.0 ** logWx2)
             a, b = axes[0].get_ylim()
             if i_lb == len(labels):
