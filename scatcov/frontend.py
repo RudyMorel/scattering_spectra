@@ -558,12 +558,13 @@ def format_to_real(Rx):
     return DescribedTensor(None, y, descri)
 
 
-def self_simi_obstruction_score(x, J=None, Q=1,
+def self_simi_obstruction_score(x, Rx=None, J=None, Q=1,
                                 wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
                                 nchunks=1, cuda=False):
     """ Quantifies obstruction to self-similarity in a certain range of scales.
 
     :param x: an array of shape (T, ) or (B, T) or (B, N, T)
+    :param Rx: overwrite representation on which to assess self-similarity, should be a normalized representation
     :param J: number of octaves for each wavelet layer
     :param Q: number of scales per octave for each wavelet layer
     :param wav_type: wavelet types for each wavelet layer
@@ -576,58 +577,62 @@ def self_simi_obstruction_score(x, J=None, Q=1,
         - score on white noise reference (gives the score estimation error)
         - score on x
     """
-    Rx = analyze(x, model_type='cov', r=2, J=J, Q=Q,
-                 wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
-                 qs=None,
-                 normalize="batch_ps", keep_ps=True, sigma2=None,
-                 estim_operator=None,
-                 nchunks=nchunks, cuda=cuda).mean_batch()
+    if Rx is None:
+        Rx = analyze(x, model_type='cov', r=2, J=J, Q=Q,
+                     wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
+                     qs=None,
+                     normalize="batch_ps", keep_ps=True, sigma2=None,
+                     estim_operator=None,
+                     nchunks=nchunks, cuda=cuda).mean_batch()
 
     # white noise reference score
-    x_wn = np.random.randn(*x.shape)
-    Rx_wn = analyze(x_wn, model_type='cov', r=2, J=J, Q=Q,
-                    wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
-                    qs=None,
-                    normalize="batch_ps", keep_ps=True, sigma2=None,
-                    estim_operator=None,
-                    nchunks=nchunks, cuda=cuda).mean_batch()
+    Rx_wn = None
+    if x is not None:
+        x_wn = np.random.randn(*x.shape)
+        Rx_wn = analyze(x_wn, model_type='cov', r=2, J=J, Q=Q,
+                        wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
+                        qs=None,
+                        normalize="batch_ps", keep_ps=True, sigma2=None,
+                        estim_operator=None,
+                        nchunks=nchunks, cuda=cuda).mean_batch()
 
     def self_simi_score_spars(Rx):
-        Wx1 = Rx.select(c_type='spars', low=False)[0, :, 0]
-        logWxs = Wx1.pow(2.0).log2()
-        dlogWxs = torch.diff(logWxs)
-        return 1e1 * dlogWxs.std().numpy().item()
+        Wx1 = Rx.select(c_type='spars', low=False)[:, :, 0]
+        logWxs = Wx1.real.pow(2.0).log2()
+        dlogWxs = logWxs[:, 1:] - logWxs[:, :-1]
+        return 1e1 * dlogWxs.std(-1).numpy()
 
     def self_simi_score_ps(Rx):
-        logWx2 = Rx.select(c_type='ps', low=False)[0, :, 0].log2()
-        dlogWx2 = torch.diff(logWx2)
-        return 2e1 * dlogWx2.std().numpy().item()
+        Wx2 = Rx.select(c_type='ps', low=False)[:, :, 0]
+        logWx2 = Wx2.real.log2()
+        dlogWx2 = logWx2[:, 1:] - logWx2[:, :-1]
+        return 2e1 * dlogWx2.std(-1).numpy()
 
     def self_simi_score_phase_mod(Rx):
         J = Rx.descri.j.max() if 'j' in Rx.descri.columns else Rx.descri.jl1.max()
 
-        score = 0.0
+        score = np.zeros(Rx.y.shape[0])
         for a in range(1, J - 1):
             phi3 = torch.stack([Rx.select(c_type='phaseenv', jl1=j1, jr1=j1 - a, low=False)[0, 0, 0]
                                 for j1 in range(a, J)])
-            score += phi3.std()
+            score += phi3.numpy().std(-1)
 
-        return 1e1 * score.numpy() / (J - 1)
+        return 1e1 * score / (J - 1)
 
     def self_simi_score_mod(Rx):
         J = Rx.descri.j.max() if 'j' in Rx.descri.columns else Rx.descri.jl1.max()
 
         ndiagonals = 0
-        score = 0.0
+        score = np.zeros(Rx.y.shape[0])
         for (a, b) in product(range(J - 1), range(-J + 1, 0)):
             if a - b >= J - 1:
                 continue
             phi4 = torch.stack([Rx.select(c_type='envelope', jl1=j1, jr1=j1 - a, j2=j1 - b, low=False)[0, 0, 0]
                                 for j1 in range(a, J + b)])
             ndiagonals += 1
-            score += phi4.std()
+            score += phi4.numpy().std(-1)
 
-        return 1e2 * score.numpy() / ndiagonals
+        return 1e2 * score / ndiagonals
 
     def get_score(Rx):
         score_phi1 = self_simi_score_spars(Rx)
@@ -642,7 +647,7 @@ def self_simi_obstruction_score(x, J=None, Q=1,
             'total': score_phi1 + score_phi2 + score_phi3 + score_phi4
         }
 
-    return get_score(Rx_wn), get_score(Rx)
+    return None if x is None else get_score(Rx_wn), get_score(Rx)
 
 
 ##################
