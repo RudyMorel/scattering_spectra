@@ -1161,7 +1161,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
                    [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$'], fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
         plt.xlabel(r'$a$', fontsize=fontsize)
-        plt.title('Cross-spectrum' + '\n' +  r'Arg$\Phi_3$', fontsize=fontsize)
+        plt.title('Cross-spectrum' + '\n' + r'Arg$\Phi_3$', fontsize=fontsize)
 
     if axes is None:
         plt.figure(figsize=(5, 10) if single_plot else (len(labels) * 5, 10))
@@ -1341,7 +1341,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
         plt.axhline(0.0, linewidth=0.7, color='black')
         plt.xlabel(r'$b$', fontsize=fontsize)
         if title:
-            plt.title('Cross-spectrum' + '\n' + r'$Arg \Phi_4$', fontsize=fontsize)
+            plt.title('Cross-spectrum' + '\n' + r'Arg$\Phi_4$', fontsize=fontsize)
 
     if axes is None:
         plt.figure(figsize=(max(len(labels), 5) * 3, 10))

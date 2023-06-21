@@ -1,3 +1,11 @@
+The **Scattering Spectra** are a tool for analyzing and generating time-series or images.
+
+They extend the standard ``power spectrum'' used in signal processing. They provide a dashboard that can be used to detect sparsity, intermittence, sign-asymmetry, time-asymmetry and other properties in a signal or image.
+
+Unlike the standard power spectrum, they can be used to produce convincing generation.
+
+Compared to recent machine learning descriptors, the Scattering Spectra can be computed on a single time-series or image and do not require large datasets.
+
 # Scattering covariance
 
 This repository implements the *Scattering Covariance* introduced in [1].
@@ -41,23 +49,25 @@ save_figure('dashboard_fbm_mrw_smrw.png')
 ![alt text](illustration/dashboard_fbm_mrw_smrw.png "Scattering Spectra comparison")
 
 The dashboard consists of 4 spectra that can be interpreted as follows:
+
 - $\Phi_1(x)[j]$ are the sparsity factors. The lower these coefficients the sparser the signal $x$.
 - $\Phi_2(x)[j]$ is the standard wavelet spectrum. A steep curve indicates long-range dependencies.
--  $\Phi_3(x)[a]$ is the phase-modulus cross-spectrum. 
-    - $|\Phi_3(x)[a]|$ is zero if the underlying process is invariant to sign change $x \overset{d}{=}-x$. \
+- $\Phi_3(x)[a]$ is the phase-modulus cross-spectrum. 
+  - $|\Phi_3(x)[a]|$ is zero if the underlying process is invariant to sign change $x \overset{d}{=}-x$. \
     These coefficients quantify non-invariance to sign-change often called "skewness".
-    - Arg $\Phi_3(x)[a]$ is zero if the underlying process $x$ is time-symmetric: $x(t) \overset{d}{=}x(-t)$. 
+  - Arg $\Phi_3(x)[a]$ is zero if the underlying process $x$ is time-symmetric: $x(t) \overset{d}{=}x(-t)$. 
     These coefficients quantify time-asymmetry. They are typically non-zero for processes with time-causality.
--  $\Phi_4(x)[a,b]$ is the modulus cross-spectrum. 
-    - $|\Phi_4(x)[a,b]|$ quantify envelope dependencies. Steep curves indicate long-range dependencies.
-    - Arg $\Phi_4(x)[a,b]$ quantify envelope time-asymmetry. These coefficients are typically non-zero for processes with time-causality.
+- $\Phi_4(x)[a,b]$ is the modulus cross-spectrum. 
+  - $|\Phi_4(x)[a,b]|$ quantify envelope dependencies. Steep curves indicate long-range dependencies.
+  - Arg $\Phi_4(x)[a,b]$ quantify envelope time-asymmetry. These coefficients are typically non-zero for processes with time-causality.
 
 For further interpretation see [1].
 
 ## Self-Similarity
-Self-Similar             |  Not Self-Similar
-:-------------------------:|:-------------------------:
-![alt text](illustration/self_similar.png "Self-Similar example") *Self-similarity distance: 2.1* | ![alt text](illustration/not_self_similar.png "Not Self-Similar example") *Self-similarity distance: 22.0*
+
+| Self-Similar                                                                                      | Not Self-Similar                                                                                           |
+|:-------------------------------------------------------------------------------------------------:|:----------------------------------------------------------------------------------------------------------:|
+| ![alt text](illustration/self_similar.png "Self-Similar example") *Self-similarity distance: 2.1* | ![alt text](illustration/not_self_similar.png "Not Self-Similar example") *Self-similarity distance: 22.0* |
 
 Processes encountered in Finance, Seismology, Physics may exhibit a form of regularity called self-similarity. Also refered as scale invariance, it states that the process is similar at different scales. 
 Assessing such property on a single realization is a hard problem. 
@@ -67,7 +77,6 @@ Assessing such property on a single realization is a hard problem.
 Similarly to time-stationarity that has a wide-sense definition that can be tested statistically on the covariance of a process $X(t)$, we introduced in [1] a wide-sense definition of self-similarity called **wide-sense Self-Similarity**. It can be tested on a covariance matrix across times $t,t'$ and scales $j,j'$.
 
 The function **self_simi_obstruction_score** from `frontend.py` assesses self-similarity on a time-series.
- 
 
 ## Generation
 
@@ -84,7 +93,7 @@ x = load_data(process_name='smrw', R=1, T=4096, lam=0.3,
 x_gen = generate(x, J=9, S=1, it=1000, cuda=True, tol_optim=1e-3) # a S x T array
 
 # VISUALIZATION
-fig, axes = plt.subplots(2,1, figsize=(10,5))
+fig, axes = plt.subplots(2, 1, figsize=(10,5))
 axes[0].plot(np.diff(x)[0,0,:], color='lightskyblue', linewidth=0.5)
 axes[1].plot(np.diff(x_gen)[0,0,:], color='coral', linewidth=0.5)
 axes[0].set_ylim(-3,3)
@@ -93,6 +102,6 @@ axes[1].set_ylim(-3,3)
 
 ![alt text](illustration/generation.png "Generation of a signal")
 
-[1] "Scale Dependencies and Self-Similarity Through Wavelet Scattering Covariance"
+[1] "Scale Dependencies and Self-Similar Models with Wavelet Scattering Spectra"
 
 Rudy Morel et al. - https://arxiv.org/abs/2204.10177
