@@ -992,7 +992,7 @@ def plot_marginal_moments(Rxs, estim_bar=False,
         plt.yscale('log', base=2)
         plt.xlabel(r'$-j$', fontsize=fontsize)
         plt.yticks(fontsize=fontsize)
-        plt.xticks(-js, [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
+        plt.xticks((-js).tolist(), [fr'$-{j + 1}$' for j in js], fontsize=fontsize)
 
     if axes is None:
         ax1 = plt.subplot2grid((1, 2), (0, 0))
@@ -1135,7 +1135,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
             eb[-1][0].set_linestyle('--')
         plt.title('Cross-spectrum' + '\n' + r'$|\Phi_3|$', fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
-        plt.xticks(np.arange(1, J),
+        plt.xticks(np.arange(1, J).tolist(),
                    [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
         plt.xlabel(r'$a$', fontsize=fontsize)
         plt.ylim(-0.02, ylim)
@@ -1156,7 +1156,7 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
             plot_x_offset = 0.07 if self_simi_bar else 0.0
             eb = plt.errorbar(a_s + plot_x_offset, y, yerr=y_err_estim, capsize=4, color=color, fmt=' ')
             eb[-1][0].set_linestyle('--')
-        plt.xticks(np.arange(1, J), [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
+        plt.xticks(np.arange(1, J).tolist(), [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
         plt.yticks([-np.pi, -0.5 * np.pi, 0.0, 0.5 * np.pi, np.pi],
                    [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$'], fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
@@ -1304,7 +1304,7 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
                                   yerr=y_err_estim[a, a:], capsize=4, color=color, fmt=' ')
                 eb[-1][0].set_linestyle('--')
         plt.axhline(0.0, linewidth=0.7, color='black')
-        plt.xticks(np.arange(-J + 1, 0), [(rf'${b}$' if b % 2 == 1 else '') for b in np.arange(-J+1, 0)],
+        plt.xticks(np.arange(-J + 1, 0).tolist(), [(rf'${b}$' if b % 2 == 1 else '') for b in np.arange(-J+1, 0)],
                    fontsize=fontsize)
         plt.xlabel(r'$b$', fontsize=fontsize)
         plt.ylim(-0.02, ylim)
@@ -1333,9 +1333,9 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
                 eb = plt.errorbar(bs + plot_x_offset, y[a, a:],
                                   yerr=y_err_estim[a, a:], capsize=4, color=color, fmt=' ')
                 eb[-1][0].set_linestyle('--')
-        plt.xticks(np.arange(-J+1, 0), [(rf'${b}$' if b % 2 == 1 else '') for b in np.arange(-J+1, 0)],
+        plt.xticks(np.arange(-J+1, 0).tolist(), [(rf'${b}$' if b % 2 == 1 else '') for b in np.arange(-J+1, 0)],
                    fontsize=fontsize)
-        plt.yticks(np.arange(-2, 3) * np.pi / 8,
+        plt.yticks((np.arange(-2, 3) * np.pi / 8).tolist(),
                    [r'$-\frac{\pi}{4}$', r'$-\frac{\pi}{8}$', r'$0$', r'$\frac{\pi}{8}$', r'$\frac{\pi}{4}$'],
                    fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
