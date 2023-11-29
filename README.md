@@ -17,9 +17,9 @@ pip install git+https://github.com/RudyMorel/scattering_spectra
 
 ## 2. Analysis
 
-The *Scattering Covariance* provides a dashboard to analyze time-series.
+The *Scattering Spectra* provide a dashboard to analyze time-series.
 
-Standard model of time series can be loaded using **load_data** from `frontend.py`. The function **analyze** computes the *Scattering Covariance*, it can be visualized using the function **plot_dashboard**.
+Standard model of time series can be loaded using **load_data** from `frontend.py`. The function **analyze** computes the *Scattering Spectra*, it can be visualized using the function **plot_dashboard**.
 
 ```python
 # DATA
@@ -65,15 +65,15 @@ Assessing such property on a single realization is a hard problem.
 
 ![alt text](illustration/wide_sense_self_similarity.png "Wide-sense Self-Similarity")
 
-Similarly to time-stationarity that has a wide-sense definition that can be tested statistically on the covariance of a process $X(t)$, we introduced in [1] a wide-sense definition of self-similarity called **wide-sense Self-Similarity**. It can be tested on a covariance matrix across times $t,t'$ and scales $j,j'$.
+Similarly to time-stationarity that has a wide-sense definition that can be tested statistically on the covariance of a process $x(t)$, we introduced in [1] a wide-sense definition of self-similarity called **wide-sense Self-Similarity**. It can be tested on a covariance matrix across times $t,t'$ and scales $j,j'$.
 
 The function **self_simi_obstruction_score** from `frontend.py` assesses self-similarity on a time-series.
 
 ## 4. Generation
 
-A model of the process $X$ can be defined from the *Scattering Covariance*. Such model can be sampled using gradient descent [1].
+A model of the process $x$ can be defined from the *Scattering Spectra*. Such model can be sampled using gradient descent [1].
 
-Function **generate** from `frontend.py` takes observed data $X$ as input and return realizations of our model of $X$.
+Function **generate** from `frontend.py` takes observed data $x$ as input and return realizations of our model of $x$.
 
 ```python
 # DATA
