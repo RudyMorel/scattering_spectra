@@ -1,28 +1,21 @@
-The **Scattering Spectra** are a tool for analyzing and generating time-series or images.
+# Scattering Spectra
 
-They extend the standard ``power spectrum'' used in signal processing. They provide a dashboard that can be used to detect sparsity, intermittence, sign-asymmetry, time-asymmetry and other properties in a signal or image.
-
-Unlike the standard power spectrum, they can be used to produce convincing generation.
-
-Compared to recent machine learning descriptors, the Scattering Spectra can be computed on a single time-series or image and do not require large datasets.
-
-# Scattering covariance
-
-This repository implements the *Scattering Covariance* introduced in [1].
+This repository implements the *Scattering Spectra* introduced in [1].
 
 It provides an interpretable low-dimensional representation of multi-scale time-series that can be used for time-series **analysis** and **generation**.
 
 Among other applications are the assessment of **self-similarity** in the data and the detection of **non-Gaussianity**.
 
-## Installation
+## 1. Installation
 
 Run the commands below to install the required packages.
+Python 3.10.10 is recommended. 
 
 ```bash
-pip install git+https://github.com/RudyMorel/scattering_covariance
+pip install git+https://github.com/RudyMorel/scattering_spectra
 ```
 
-## Analysis
+## 2. Analysis
 
 The *Scattering Covariance* provides a dashboard to analyze time-series.
 
@@ -30,10 +23,10 @@ Standard model of time series can be loaded using **load_data** from `frontend.p
 
 ```python
 # DATA
-x1 = load_data(process_name='fbm', R=256, T=32768)
-x2 = load_data(process_name='mrw', R=256, T=32768, lam=0.1)
-x3 = load_data(process_name='smrw', R=256, T=32768, lam=0.3, 
-               gamma=1/32768/256, K=0.03, alpha=0.23, beta=0.23)
+x1 = load_data(model_name='fbm', R=256, T=32768, H=0.5)
+x2 = load_data(model_name='mrw', R=256, T=32768, H=0.5, lam=0.1)
+x3 = load_data(model_name='smrw', R=256, T=32768, H=0.5, lam=0.3, 
+               gamma=1/32768/256, K0=0.03, alpha=0.23, beta=0.23)
 
 # ANALYSIS
 Rx1 = analyze(x1, J=8, high_freq=0.25, cuda=True, nchunks=64)
@@ -42,8 +35,6 @@ Rx3 = analyze(x3, J=8, high_freq=0.25, cuda=True, nchunks=64)
 
 # VISUALIZATION
 plot_dashboard([Rx1, Rx2, Rx3], labels=['fbm', 'mrw', 'smrw'])
-
-save_figure('dashboard_fbm_mrw_smrw.png')
 ```
 
 ![alt text](illustration/dashboard_fbm_mrw_smrw.png "Scattering Spectra comparison")
@@ -63,7 +54,7 @@ The dashboard consists of 4 spectra that can be interpreted as follows:
 
 For further interpretation see [1].
 
-## Self-Similarity
+### Self-Similarity
 
 | Self-Similar                                                                                      | Not Self-Similar                                                                                           |
 |:-------------------------------------------------------------------------------------------------:|:----------------------------------------------------------------------------------------------------------:|
@@ -78,7 +69,7 @@ Similarly to time-stationarity that has a wide-sense definition that can be test
 
 The function **self_simi_obstruction_score** from `frontend.py` assesses self-similarity on a time-series.
 
-## Generation
+## 4. Generation
 
 A model of the process $X$ can be defined from the *Scattering Covariance*. Such model can be sampled using gradient descent [1].
 
@@ -86,11 +77,11 @@ Function **generate** from `frontend.py` takes observed data $X$ as input and re
 
 ```python
 # DATA
-x = load_data(process_name='smrw', R=1, T=4096, lam=0.3,
-              gamma=1/4096/256, K=0.03, alpha=0.23, beta=0.23) # a B x T array
+x = load_data(model_name='smrw', R=1, T=4096, H=0.5, lam=0.3,
+              gamma=1/4096/256, K0=0.03, alpha=0.23, beta=0.23) # a B x T array
 
 # GENERATION
-x_gen = generate(x, J=9, S=1, it=1000, cuda=True, tol_optim=1e-3) # a S x T array
+x_gen = generate(x, J=9, S=1, max_iterations=1000, cuda=True, tol_optim=1e-2) # a S x T array
 
 # VISUALIZATION
 fig, axes = plt.subplots(2, 1, figsize=(10,5))
@@ -101,6 +92,9 @@ axes[1].set_ylim(-3,3)
 ```
 
 ![alt text](illustration/generation.png "Generation of a signal")
+
+See `testing.ipynb` for more code examples. 
+
 
 [1] "Scale Dependencies and Self-Similar Models with Wavelet Scattering Spectra"
 

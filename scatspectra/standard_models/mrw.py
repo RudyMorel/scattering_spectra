@@ -1,7 +1,8 @@
+""" Multifrctal random walks. """
 import numpy as np
 from numpy.fft import fft, ifft
 
-from scatcov.stochastic_classical_models.gaussian import gaussian_cme, fbm
+from scatspectra.standard_models import gaussian_cme, fbm
 
 
 def gaussian_w(R, T, L, lam, dt=1):
@@ -15,7 +16,7 @@ def gaussian_w(R, T, L, lam, dt=1):
     return w
 
 
-def mrw(R, T, L, H, lam, sigma=1):
+def mrw(B, T, L, H, lam, sigma=1):
     """
     Create a realization of multifractal random walk
 
@@ -41,10 +42,10 @@ def mrw(R, T, L, H, lam, sigma=1):
         raise ValueError('H must satisfy 0 <= H <= 1')
 
     if L > T:
-        raise ValueError('Integral scale L is larger than data length N')
+        raise ValueError('Integral scale L is larger than data length T')
 
     # 1) Gaussian process w
-    w = gaussian_w(R, T, L, lam)
+    w = gaussian_w(B, T, L, lam)
 
     # Adjust mean to ensure convergence of variance
     # r = 1 / 2  # see Bacry, Delour & Muzy, Phys Rev E, 2001, page 4
@@ -52,7 +53,7 @@ def mrw(R, T, L, H, lam, sigma=1):
     w -= np.mean(w, axis=-1, keepdims=True) + r * lam ** 2 * np.log(L)
 
     # 2) fGn e
-    fgn = np.diff(fbm(R, T + 1, H, sigma), axis=-1)
+    fgn = np.diff(fbm(B, T + 1, H, sigma), axis=-1)
 
     # 3) mrw
     mrw = np.cumsum(fgn * np.exp(w), axis=-1)
@@ -60,7 +61,7 @@ def mrw(R, T, L, H, lam, sigma=1):
     return mrw
 
 
-def skewed_mrw(R, T, L, H, lam, gamma, K0=1, alpha=1, sigma=1, dt=1, beta=1, do_mirror=False):
+def skewed_mrw(B, T, L, H, lam, gamma, K0=1, alpha=1, sigma=1, dt=1, beta=1):
     """ Skewed mrw as in Pochart & Bouchaud. Assumes dt = 1, so no parameter beta is needed. """
     if not 0 <= H <= 1:
         raise ValueError('H must satisfy 0 <= H <= 1')
@@ -71,7 +72,7 @@ def skewed_mrw(R, T, L, H, lam, gamma, K0=1, alpha=1, sigma=1, dt=1, beta=1, do_
     # Tp = int(np.floor(T / dt - 1))
 
     # 1) Gaussian process w
-    w = gaussian_w(R, T, L, lam, dt)
+    w = gaussian_w(B, T, L, lam, dt)
 
     # Adjust mean to ensure convergence of variance
     # r = 1 / 2  # see Bacry, Delour & Muzy, Phys Rev E, 2001, page 4
@@ -79,7 +80,7 @@ def skewed_mrw(R, T, L, H, lam, gamma, K0=1, alpha=1, sigma=1, dt=1, beta=1, do_
     w -= np.mean(w, axis=-1, keepdims=True) + r * lam ** 2 * np.log(L / dt)
 
     # 2) fGn e
-    fgn = np.diff(fbm(R, 2 * T + 1, H, sigma, dt), axis=-1)
+    fgn = np.diff(fbm(B, 2 * T + 1, H, sigma, dt), axis=-1)
 
     # 3) Correlate components
     past = skewness_convolution(fgn, K0, alpha, gamma, beta, dt)
@@ -88,11 +89,11 @@ def skewed_mrw(R, T, L, H, lam, gamma, K0=1, alpha=1, sigma=1, dt=1, beta=1, do_
     # 4) skewed mrw
     smrw = np.cumsum(fgn[:, T:] * np.exp(wtilde), axis=-1)
 
-    if do_mirror:
-        past_mirror = skewness_convolution(-fgn, K0, alpha, gamma, beta, dt)
-        wtilde_mirror = w - past_mirror
-        smrw_mirror = np.cumsum(-fgn[:, T:] * np.exp(wtilde_mirror), axis=0)
-        return smrw, smrw_mirror
+    # if do_mirror:
+    #     past_mirror = skewness_convolution(-fgn, K0, alpha, gamma, beta, dt)
+    #     wtilde_mirror = w - past_mirror
+    #     smrw_mirror = np.cumsum(-fgn[:, T:] * np.exp(wtilde_mirror), axis=0)
+    #     return smrw, smrw_mirror
 
     return smrw
 

@@ -4,8 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scatcov.layers.filter_bank import init_band_pass, init_low_pass
-from scatcov.layers.scale_indexer import ScaleIndexer
+from scatspectra.layers import init_band_pass, init_low_pass, ScaleIndexer
 
 
 # Fourier and torch compatibility
@@ -26,6 +25,7 @@ else:
 
 class Pad1d(nn.Module):
     """ Padding base class. """
+    
     def __init__(self, T: int) -> None:
         super(Pad1d, self).__init__()
         self.T = T
@@ -42,21 +42,25 @@ class Pad1d(nn.Module):
 
 class ReflectionPad(Pad1d):
     """ Reflection pad. """
-    def pad(self, x: torch.tensor) -> torch.tensor:
+
+    def pad(self, x: torch.Tensor) -> torch.Tensor:
         return torch.cat([x, torch.flip(x, dims=(-1,))], dim=-1)
 
-    def unpad(self, x: torch.tensor) -> torch.tensor:
+    def unpad(self, x: torch.Tensor) -> torch.Tensor:
         return x[..., :self.T]
 
 
 class Wavelet(nn.Module):
     """ Wavelet convolutional operator. """
+
     def __init__(self, T: int, J: int, Q: int,
-                 wav_type: str, wav_norm: str, high_freq: float,
+                 wav_type: str, wav_norm: str, high_freq: float, rpad: bool,
                  layer_r: int,
                  sc_idxer: ScaleIndexer):
         super(Wavelet, self).__init__()
-        self.T, self.J, self.Q, self.layer_r = 2 * T, J, Q, layer_r
+        self.T, self.J, self.Q, self.layer_r = T, J, Q, layer_r
+        if rpad:
+            self.T *= 2
         self.wav_type, self.high_freq, self.wav_norm = wav_type, high_freq, wav_norm
         self.sc_idxer = sc_idxer
 
@@ -65,7 +69,7 @@ class Wavelet(nn.Module):
         filt_hat = torch.tensor(np.concatenate([psi_hat, phi_hat[None, :]]), dtype=torch.float32)
         self.filt_hat = nn.Parameter(filt_hat, requires_grad=False)
 
-        self.Pad = ReflectionPad(T)
+        self.Pad = ReflectionPad(T) if rpad else Pad1d(T)
 
         self.pairing = self.get_pairing()
 
@@ -85,7 +89,7 @@ class Wavelet(nn.Module):
 
         return pairing
 
-    def forward(self, x: torch.tensor) -> torch.tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """ Performs in Fourier the convolution (x * psi_lam, x * phi_J).
 
         :param x: (C) x Jr x A x T tensor

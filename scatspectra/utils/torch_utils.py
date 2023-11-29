@@ -1,5 +1,5 @@
 """ Utils function for manipulating tensors. """
-from typing import *
+from typing import Iterable, List
 import numpy as np
 import torch
 

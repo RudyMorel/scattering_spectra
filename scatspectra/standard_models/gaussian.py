@@ -6,7 +6,8 @@ from numpy.random import normal as nd
 
 def gaussian_cme(cov, R, T):
     """ Create S synthesis of a gaussian process of length T with the specified
-    autocovariance through circulant matrix embedding (see C. R. Dietrich AND G. N. Newsam).
+    autocovariance through circulant matrix embedding 
+    (see C. R. Dietrich AND G. N. Newsam).
 
     :param cov: T array, function r such that Cov[Y(x)Y(y)] = r(|x-y|)
     :param: S: int, number of synthesis
@@ -17,7 +18,8 @@ def gaussian_cme(cov, R, T):
     cov = np.concatenate((cov, np.flip(cov[1:-1])), axis=0)
     L = np.fft.fft(cov)[None, :]
     if np.any(L.real < 0):
-        warnings.warn('Found FFT of covariance < 0. Embedding matrix is not non-negative definite.')
+        warnings.warn('Found FFT of covariance < 0. Embedding matrix is not' + 
+                      'non-negative definite.')
 
     # Random noise in Fourier domain
     z = np.random.randn(R, 2 * T - 2) + 1j * np.random.randn(R, 2 * T - 2)
@@ -32,7 +34,7 @@ def gaussian_cme(cov, R, T):
     return x
 
 
-def fbm(R, T, H, sigma=1, dt=None):
+def fbm(B, T, H, sigma=1, dt=None):
     """ Create a realization of fractional Brownian motion using circulant
     matrix embedding.
 
@@ -57,14 +59,14 @@ def fbm(R, T, H, sigma=1, dt=None):
     r = dt ** (2 * H) * sigma ** 2 / 2 * (
                 np.abs(n + 1) ** (2 * H) + np.abs(n - 1) ** (2 * H) - 2 * np.abs(n) ** (2 * H))
 
-    fbm = np.cumsum(gaussian_cme(r, R, T), axis=1)
+    fbm = np.cumsum(gaussian_cme(r, B, T), axis=1)
 
     return fbm
 
 
-def geom_brownian(R: int, T: float, nb_sample: int, S0: float, mu: float, sigma: float):
+def geom_brownian(B: int, T: float, nb_sample: int, S0: float, mu: float, sigma: float):
     """ Simulate a geometric brownian also called Black-Scholes trajectory of trend mu and vol sigma. """
-    B = np.cumsum(np.random.randn(R, nb_sample), -1) / np.sqrt(nb_sample)
-    x = S0 * np.exp((mu - 0.5 * sigma ** 2) * np.linspace(0, T, nb_sample) + sigma * np.sqrt(T) * (B - B[:, 0:1]))
+    brownian = np.cumsum(np.random.randn(B, nb_sample), -1) / np.sqrt(nb_sample)
+    x = S0 * np.exp((mu - 0.5 * sigma ** 2) * np.linspace(0, T, nb_sample) + sigma * np.sqrt(T) * (brownian - brownian[:, 0:1]))
 
     return x
