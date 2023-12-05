@@ -3,9 +3,7 @@ scipy
 pandas 
 tqdm 
 termcolor 
-torch 
-torchvision 
-torchaudio 
+torch
 matplotlib 
 jupyter 
 ipykernel

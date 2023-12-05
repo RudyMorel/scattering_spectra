@@ -171,12 +171,13 @@ def analyze(x, model_type="scat_spectra", r=2,
     if r > 2 and model_type not in [None, "scat_marginal"]:
         raise ValueError("Scattering Spectra are not implemented" +
                          "for more than 3 convolution layers.")
-    if x.shape[1] > 1 and not diago_n:
-        raise ValueError("Multi-variate is currently under development.")
 
     # format input
     x = torch.tensor(format_np(x))
     B, N, T = x.shape
+
+    if x.shape[1] > 1 and not diago_n:
+        raise ValueError("Multi-variate is currently under development.")
 
     if x.dtype not in [torch.float32, torch.float64]:
         x = x.type(torch.float32)
