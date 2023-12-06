@@ -356,8 +356,8 @@ class PoissonGenerator(DataGeneratorBase):
                  mu: float,
                  signed: bool = False,
                  B: int = 64,
-                 cache_path: Path | None = None
-                 ):
+                 cache_path: Path | None = None,
+                 **kwargs):
         """
         :param T: number of time samples
         :param mu: intensity of the Poisson process
@@ -365,7 +365,7 @@ class PoissonGenerator(DataGeneratorBase):
         :param B: batch size
         """
         super(PoissonGenerator, self).__init__(
-            'poisson', B, cache_path, T=T, mu=mu, signed=signed
+            'poisson', B, cache_path, T=T, mu=mu, signed=signed, **kwargs
         )
 
     def generate_batch(self, i: int) -> np.ndarray:
@@ -380,13 +380,13 @@ class FBmGenerator(DataGeneratorBase):
                  H: float,
                  B: int = 64,
                  cache_path: Path | None = None,
-                 ):
+                 **kwargs):
         """
         :param T: number of time samples
         :param H: Hurst exponent
         :param B: batch size
         """
-        super(FBmGenerator, self).__init__('fbm', B, cache_path, T=T, H=H)
+        super(FBmGenerator, self).__init__('fbm', B, cache_path, T=T, H=H, **kwargs)
 
     def generate_batch(self, i: int) -> np.ndarray:
         return fbm(**self.config)[:, None, :]
@@ -401,7 +401,7 @@ class MRWGenerator(DataGeneratorBase):
                  lam: float,
                  B: int = 64,
                  cache_path: Path | None = None,
-                 ):
+                 **kwargs):
         """
         :param T: number of time samples
         :param H: Hurst exponent
@@ -410,7 +410,7 @@ class MRWGenerator(DataGeneratorBase):
         :param cache_path: _description_, defaults to None
         """
         super(MRWGenerator, self).__init__(
-            'MRW', B, cache_path, T=T, L=T, H=H, lam=lam
+            'MRW', B, cache_path, T=T, L=T, H=H, lam=lam,  **kwargs
         )
 
     def generate_batch(self, i: int) -> np.ndarray:
@@ -430,7 +430,7 @@ class SMRWGenerator(DataGeneratorBase):
                  gamma: float = 1/(2**12)/64,
                  B: int = 64,
                  cache_path: Path | None = None,
-                 ):
+                 **kwargs):
         """
         :param T: number of time samples
         :param H: Hurst exponent
@@ -440,7 +440,7 @@ class SMRWGenerator(DataGeneratorBase):
         """
         super(SMRWGenerator, self).__init__(
             'SMRW', B, cache_path, T=T, L=T, H=H, lam=lam, K0=K0,
-            alpha=alpha, beta=beta, gamma=gamma
+            alpha=alpha, beta=beta, gamma=gamma, **kwargs
         )
 
     def generate_batch(self, i: int) -> np.ndarray:

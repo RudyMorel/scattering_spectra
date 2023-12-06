@@ -46,7 +46,7 @@ from scatspectra.description import make_description_compatible
 def load_data(model_name, R, T,
               cache_path=None, num_workers=1,
               **model_params):
-    """ Load data from standard models e.g. fBm, Poisson, MRW, SMRW.
+    """ Load log-prices from standard models e.g. fBm, Poisson, MRW, SMRW.
 
     :param model_name: fbm, poisson, mrw, smrw, hawkes, turbulence or snp
     :param R: number of realizations
