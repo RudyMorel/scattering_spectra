@@ -38,7 +38,9 @@ class ChunkedModule(nn.Module):
         self.nchunks = nchunks
 
     @abstractmethod
-    def forward_batch(self, x: torch.Tensor) -> DescribedTensor:
+    def forward_batch(self, 
+                      x: torch.Tensor,
+                      bs: torch.Tensor | None = None) -> DescribedTensor:
         """ Forward on the batch dimension. """
         pass
 
@@ -50,8 +52,8 @@ class ChunkedModule(nn.Module):
         :return:
         """
         nchunks = min(x.shape[0], self.nchunks)
-        batch_split = np.array_split(np.arange(x.shape[0]), nchunks)
-        Rxs = [self.forward_batch(x[bs, ...]) for bs in batch_split]
+        batch_split = torch.split(torch.arange(x.shape[0]), nchunks)
+        Rxs = [self.forward_batch(x[bs, ...], bs) for bs in batch_split]
         return DescribedTensor(
             x=x,
             y=torch.cat([Rx.y for Rx in Rxs]),
@@ -115,12 +117,8 @@ class Model(ChunkedModule):
         self.phase_operator = Modulus() if A is None else PhaseOperator(A)
 
         # normalization layer
-        if norm_on_the_fly:
-            self.norm_layer = NormalizationLayer(2, None, True)
-        elif sigma2 is not None:
-            self.norm_layer = NormalizationLayer(2, sigma2.pow(0.5), False)
-        else:
-            self.norm_layer = nn.Identity()
+        sigma = None if sigma2 is None else sigma2.pow(0.5)
+        self.norm_layer = NormalizationLayer(2, sigma, norm_on_the_fly)
 
         # channel transforms
         if channel_transforms is None:
@@ -196,14 +194,15 @@ class Model(ChunkedModule):
             return t
         return self._apply(cast)
 
-    def compute_scattering(self, x: torch.Tensor) -> List[torch.Tensor]:
+    def compute_scattering(self, x: torch.Tensor, 
+                           bs: torch.Tensor | None= None) -> List[torch.Tensor]:
         """ Compute the Wx, W|Wx|, ..., W|...|Wx|| 
         i.e. standard scattering coefficients. """
         Sx_l = []
         for o, W in enumerate(self.Ws):
             x = W(x)
             if o == 0:
-                x = self.norm_layer(x)
+                x = self.norm_layer(x, bs)
             Sx_l.append(x)
             x = torch.abs(x)
 
@@ -323,9 +322,11 @@ class Model(ChunkedModule):
 
         return df
 
-    def forward_batch(self, x: torch.Tensor):
+    def forward_batch(self, x: torch.Tensor, 
+                      bs: torch.Tensor | None = None) -> torch.Tensor:
         """
         :param x: tensor of shape (B, N, T)
+        :param bs: tensor of the indices b1,...,bn of the mini-batch
         """
 
         if x.ndim != 3:
@@ -335,7 +336,7 @@ class Model(ChunkedModule):
         x = x[:, :, None, None, :]
 
         # compute scattering coefficients Sx(t, j1 ... jr) for r=1,2,...
-        Sx = self.compute_scattering(x)
+        Sx = self.compute_scattering(x, bs)
 
         # compute scattering coefficients Sx(t, j1 ... jr)
         if self.model_type is None:

@@ -15,13 +15,17 @@ class NormalizationLayer(nn.Module):
         self.sigma = sigma
         self.on_the_fly = on_the_fly
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.on_the_fly:  # normalize on the fly
-            sigma = torch.abs(x).pow(2.0).pow(0.5)
-            return x / sigma
+    def forward(self, x: torch.Tensor, 
+                bs: torch.Tensor | None = None) -> torch.Tensor:
         if self.sigma is None:
-            raise ValueError("Normalization sigma should have been provided")
-        return x / self.sigma[(..., *(None,) * (x.ndim - 1 - self.dim))]
+            return x
+        if self.on_the_fly:  # normalize on the fly
+            sigma = torch.abs(x).pow(2.0).mean(-1,keepdim=True).pow(0.5)
+            return x / sigma
+        sigma = self.sigma[(..., *(None,) * (x.ndim - 1 - self.dim))]
+        if bs is not None and self.sigma.shape[0] > 1:
+            sigma = sigma[bs,...]
+        return x / sigma
 
 
 class Modulus(nn.Module):
