@@ -8,7 +8,7 @@ with open('requirements.txt') as f:
 
 setuptools.setup(
     name='scatspectra',
-    version='1.1',
+    version='1.1.1',
     author='Rudy Morel',
     author_email='rudy.morel@ens.fr',
     description=

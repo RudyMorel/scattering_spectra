@@ -293,7 +293,7 @@ class DataGeneratorBase:
             x = self.generate_batch(i)
             if self.dpath is None or not self.dpath.is_dir():
                 return (i, x)
-            fname = f"{np.random.randint(int(1e10), int(1e11))}.npy"
+            fname = f"{np.random.randint(int(1e5), int(1e6))}.npy"
             if (self.dpath / fname).is_file():  # very unlikely
                 raise OSError(f"File {fname} already exists.")
             np.save(str(self.dpath / fname), x)
