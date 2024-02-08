@@ -1,6 +1,6 @@
 ipykernel==6.29.2
 jupyter==1.0.0
-matplotlib==2.8.2
+matplotlib==3.8.2
 numpy==1.26.4
 pandas==2.2.0
 scipy==1.12.0
