@@ -6,16 +6,15 @@ It provides an interpretable low-dimensional representation of multi-scale time-
 
 Among other applications are the assessment of **self-similarity** in the data and the detection of **non-Gaussianity**.
 
-## 1. Installation
+## Installation
 
-Run the commands below to install the required packages.
-Python 3.10.10 is recommended. 
+From a venv with python>=3.10 run the commands below to install the required packages.
 
 ```bash
 pip install git+https://github.com/RudyMorel/scattering_spectra
 ```
 
-## 2. Analysis
+## 1. Analysis
 
 The *Scattering Spectra* provide a dashboard to analyze time-series.
 
@@ -69,7 +68,7 @@ Similarly to time-stationarity that has a wide-sense definition that can be test
 
 The function **self_simi_obstruction_score** from `frontend.py` assesses self-similarity on a time-series.
 
-## 4. Generation
+## 2. Generation
 
 A model of the process $x$ can be defined from the *Scattering Spectra*. Such model can be sampled using gradient descent [1].
 

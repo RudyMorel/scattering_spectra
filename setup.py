@@ -10,7 +10,7 @@ setuptools.setup(
     name='scatspectra',
     version='1.1.1',
     author='Rudy Morel',
-    author_email='rudy.morel@ens.fr',
+    author_email='rmorel@flatironinstitute.org',
     description=
     'Analysis and generation of time-series with Scattering Spectra',
     long_description=long_description,

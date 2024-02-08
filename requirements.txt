@@ -1,9 +1,7 @@
-numpy 
-scipy 
-pandas 
-tqdm 
-termcolor 
+matplotlib
+numpy
+pandas
+scipy
+tqdm
+termcolor
 torch
-matplotlib 
-jupyter 
-ipykernel
