@@ -517,20 +517,22 @@ class ScatGenerator(DataGeneratorBase):
             return x_synt  # (B, N, T)
 
 
-def generate(x=None, Rx=None, S=1, shape=None,
-             x0=None,
-             model_type="scat_spectra", r=2, J=None, Q=1,
-             wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-             rpad=True,
-             cross_params=None, diago_n=True,
-             qs=None,
-             coeff_types=None,
-             max_iterations=10000, tol_optim=5e-4, seed=None,
-             histogram_moments=False,
-             skew_redundance=True,
-             nchunks=1,
-             cache_path=None, exp_name=None,
-             cuda=False, gpus=None, num_workers=1):
+def generate(
+    x=None, Rx=None, S=1, shape=None,
+    x0=None,
+    model_type="scat_spectra", r=2, J=None, Q=1,
+    wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
+    rpad=True,
+    cross_params=None, diago_n=True,
+    qs=None,
+    coeff_types=None,
+    max_iterations=10000, tol_optim=5e-4, seed=None,
+    histogram_moments=False,
+    skew_redundance=True,
+    nchunks=1,
+    cache_path=None, exp_name=None,
+    cuda=False, gpus=None, num_workers=1
+):
 
     # to make torch with multiprocessing works
     torch.set_num_threads(1)
@@ -865,7 +867,7 @@ def plot_phase_envelope_spectrum(
         plt.axhline(0.0, linewidth=0.7, color='black')
         plt.xticks(np.arange(1, J).tolist(),
                    [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
-        plt.xlabel(r'$a$', fontsize=fontsize)
+        plt.xlabel(r"$j_1-j'_1$", fontsize=fontsize)
         if i_lb == 0:
             plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
             plt.yticks(fontsize=fontsize)
@@ -890,7 +892,7 @@ def plot_phase_envelope_spectrum(
         plt.yticks([-np.pi, -0.5 * np.pi, 0.0, 0.5 * np.pi, np.pi],
                    [r'$-\pi$', r'$-\frac{\pi}{2}$', r'$0$', r'$\frac{\pi}{2}$', r'$\pi$'], fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
-        plt.xlabel(r'$a$', fontsize=fontsize)
+        plt.xlabel(r"$j_1-j'_1$", fontsize=fontsize)
         plt.title(r'Skewness Arg $\Phi_3$', fontsize=fontsize)
 
     if axes is None:
@@ -1052,7 +1054,7 @@ def plot_scattering_spectrum(
         plt.axhline(0.0, linewidth=0.7, color='black')
         plt.xticks(np.arange(-J + 1, 0).tolist(), [(rf'${b}$' if b % 2 == 1 else '') for b in np.arange(-J+1, 0)],
                    fontsize=fontsize)
-        plt.xlabel(r'$b$', fontsize=fontsize)
+        plt.xlabel(r"$j_2-j_1$", fontsize=fontsize)
         plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         plt.yticks(fontsize=fontsize)
         plt.locator_params(axis='x', nbins=J - 1)
@@ -1085,7 +1087,7 @@ def plot_scattering_spectrum(
                        r'$0$', r'$\frac{\pi}{8}$', r'$\frac{\pi}{4}$'],
                    fontsize=fontsize)
         plt.axhline(0.0, linewidth=0.7, color='black')
-        plt.xlabel(r'$b$', fontsize=fontsize)
+        plt.xlabel(r"$j_2-j_1$", fontsize=fontsize)
         if title:
             plt.title(r'Kurtosis Arg$\Phi_4$', fontsize=fontsize)
 
