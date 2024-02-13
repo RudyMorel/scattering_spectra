@@ -193,15 +193,13 @@ class PriceData:
                 (x_init.ndim > 0) and x_init.shape != x[..., 0].shape:
             raise ValueError("Wrong x_init format in PriceData.")
 
-        dts_increment = None
-        if dts is not None:
-            dts_increment = dts[1:]
+        self.dts = dts
 
         # set correct initial value through multiplication
         self.x = self.rescale(x, x_init, additive=dx is not None)
-        self.lnx = TimeSeriesBase(np.log(x), dts)
-        self.dx = TimeSeriesBase(np.diff(x), dts_increment)
-        self.dlnx = TimeSeriesBase(np.diff(np.log(x)), dts_increment)
+        self.lnx = np.log(x)
+        self.dx = np.diff(x)
+        self.dlnx = np.diff(np.log(x))
 
     @staticmethod
     def rescale(x: np.ndarray,
