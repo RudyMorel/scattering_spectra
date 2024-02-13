@@ -12,7 +12,9 @@ class NormalizationLayer(nn.Module):
                  on_the_fly: bool) -> None:
         super(NormalizationLayer, self).__init__()
         self.dim = dim
-        self.sigma = sigma
+        if sigma is not None and ((sigma <= 0).any() or torch.isnan(sigma).any()):
+            raise ValueError("Sigma must contain only positive values.")
+        self.register_buffer("sigma", sigma)
         self.on_the_fly = on_the_fly
 
     def forward(self, x: torch.Tensor, 
