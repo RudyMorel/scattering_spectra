@@ -411,10 +411,13 @@ class ScatGenerator(DataGeneratorBase):
             if x_observed is not None:
                 x_observed = x_observed.cuda()
 
-        Rx_target = config['Rx']
-        if Rx_target is None:
+        if config['Rx'] is None:
             print("Preparing target representation")
             Rx_target = model(x_observed)
+        else:
+            Rx_target = config['Rx'].clone()
+            mask = Rx_target.eval("coeff_type=='variance'")
+            Rx_target.y[:,mask,:] = 1.0
 
         if model.all_coeff_types is not None:
             print(f"Model {config['model_type']} based on " +
@@ -536,7 +539,7 @@ def generate(x=None, Rx=None, S=1, shape=None,
     if x is not None:
         config['dtype'] = torch.float32 if x.dtype == np.float32 else torch.float64
     elif Rx is not None:
-        config['dtype'] = Rx.y.dtype
+        config['dtype'] = Rx.y.real.dtype
 
     config['method'] = 'L-BFGS-B'
     config['maxfun'] = 2e6
