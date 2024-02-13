@@ -18,51 +18,19 @@ from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
 
 
-class TimeSeriesBase(np.ndarray):
-    """ A time-series is just a numpy array whose last dimension is indexed 
-    by time. """
-
-    def __new__(cls, input_array, dts=None):
-        obj = np.asarray(input_array).view(cls)
-        obj.dts = dts
-        return obj
-
-    def __getitem__(self, items):
-        """ Slice the array and also the time indices. """
-        x_sliced = super(TimeSeriesBase, self).__getitem__(items)
-
-        dts_sliced = self.dts
-
-        if self.dts is not None and isinstance(items, tuple):
-
-            if Ellipsis in items:
-                last_axis_items = items[items.index(Ellipsis) + 1]
-            else:
-                last_axis_items = items[-1]
-
-            dts_sliced = self.dts[last_axis_items]
-
-        return TimeSeriesBase(x_sliced, dts_sliced)
-
-    def __array_finalize__(self, obj) -> None:
-        if obj is None:
-            return
-        # attribute "dts" should be maintained
-        default_attributes = {"dts": None}
-        self.__dict__.update(default_attributes)
-
-
 class TimeSeriesDataset:
     """ Time-series dataset stored in a directory. Each file in the directory 
     should contain an array of same shape (B,N,T) with B the batch size, N the 
     number of time-series channels and T the number of samples. """
 
-    def __init__(self,
-                 dpath: Path,
-                 R: int,
-                 load: bool = False,
-                 slices: Dict[str, slice] | None = None,
-                 batch_shape=None):
+    def __init__(
+        self,
+        dpath: Path,
+        R: int,
+        load: bool = False,
+        slices: Dict[str, slice] | None = None,
+        batch_shape=None
+    ):
         """
         :param dpath: path to the directory containing time-series
         :param R: number of time series to load 
@@ -160,13 +128,15 @@ def cumsum_zero(dx):
 class PriceData:
     """ Handle positive price time-series. """
 
-    def __init__(self,
-                 x: np.ndarray | None = None,
-                 dx: np.ndarray | None = None,
-                 lnx: np.ndarray | None = None,
-                 dlnx: np.ndarray | None = None,
-                 x_init: float | np.ndarray | None = None,
-                 dts=None):
+    def __init__(
+        self,
+        x: np.ndarray | None = None,
+        dx: np.ndarray | None = None,
+        lnx: np.ndarray | None = None,
+        dlnx: np.ndarray | None = None,
+        x_init: float | np.ndarray | None = None,
+        dts=None
+    ):
         """
         :param x: prices
         :param dx: price increments
@@ -202,9 +172,9 @@ class PriceData:
         self.dlnx = np.diff(np.log(x))
 
     @staticmethod
-    def rescale(x: np.ndarray,
-                x_init: np.ndarray | None,
-                additive: bool) -> np.ndarray:
+    def rescale(
+        x: np.ndarray, x_init: np.ndarray | None, additive: bool
+    ) -> np.ndarray:
         """ Impose the right starting point to each time-series in x. """
         if x_init is not None:
             if additive:
@@ -230,11 +200,13 @@ class PriceData:
 class DataGeneratorBase:
     """ Base multi-processing dataset generator. """
 
-    def __init__(self,
-                 model_name: str,
-                 B: int,
-                 cache_path: Path | None = None,
-                 **kwargs):
+    def __init__(
+        self,
+        model_name: str,
+        B: int,
+        cache_path: Path | None = None,
+        **kwargs
+    ):
         """
         :param model_name: name of the generative model
         :param B: size of generated batches
@@ -357,13 +329,15 @@ class DataGeneratorBase:
 class PoissonGenerator(DataGeneratorBase):
     """ Poisson jump process. """
 
-    def __init__(self,
-                 T: int,
-                 mu: float,
-                 signed: bool = False,
-                 B: int = 64,
-                 cache_path: Path | None = None,
-                 **kwargs):
+    def __init__(
+        self,
+        T: int,
+        mu: float,
+        signed: bool = False,
+        B: int = 64,
+        cache_path: Path | None = None,
+        **kwargs
+    ):
         """
         :param T: number of time samples
         :param mu: intensity of the Poisson process
@@ -381,12 +355,14 @@ class PoissonGenerator(DataGeneratorBase):
 class FBmGenerator(DataGeneratorBase):
     """ Fractional Brownian motion. """
 
-    def __init__(self,
-                 T: int,
-                 H: float,
-                 B: int = 64,
-                 cache_path: Path | None = None,
-                 **kwargs):
+    def __init__(
+        self,
+        T: int,
+        H: float,
+        B: int = 64,
+        cache_path: Path | None = None,
+        **kwargs
+    ):
         """
         :param T: number of time samples
         :param H: Hurst exponent
@@ -401,13 +377,15 @@ class FBmGenerator(DataGeneratorBase):
 class MRWGenerator(DataGeneratorBase):
     """ Multifractal random walk. """
 
-    def __init__(self,
-                 T: int,
-                 H: float,
-                 lam: float,
-                 B: int = 64,
-                 cache_path: Path | None = None,
-                 **kwargs):
+    def __init__(
+        self,
+        T: int,
+        H: float,
+        lam: float,
+        B: int = 64,
+        cache_path: Path | None = None,
+        **kwargs
+    ):
         """
         :param T: number of time samples
         :param H: Hurst exponent
@@ -426,17 +404,19 @@ class MRWGenerator(DataGeneratorBase):
 class SMRWGenerator(DataGeneratorBase):
     """ Skewed Multifractal Random Walk. """
 
-    def __init__(self,
-                 T: int,
-                 H: float,
-                 lam: float,
-                 K0: float = 0.035,
-                 alpha: float = 0.23,
-                 beta: float = 0.5,
-                 gamma: float = 1/(2**12)/64,
-                 B: int = 64,
-                 cache_path: Path | None = None,
-                 **kwargs):
+    def __init__(
+        self,
+        T: int,
+        H: float,
+        lam: float,
+        K0: float = 0.035,
+        alpha: float = 0.23,
+        beta: float = 0.5,
+        gamma: float = 1/(2**12)/64,
+        B: int = 64,
+        cache_path: Path | None = None,
+        **kwargs
+    ):
         """
         :param T: number of time samples
         :param H: Hurst exponent

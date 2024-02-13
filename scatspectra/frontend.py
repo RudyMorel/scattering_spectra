@@ -43,9 +43,11 @@ from scatspectra.description import make_description_compatible
 # DATA LOADING
 ##################
 
-def load_data(name, R=None, T=None,
-              cache_path=None, num_workers=1,
-              **model_params):
+def load_data(
+    name, R=None, T=None,
+    cache_path=None, num_workers=1, 
+    **model_params
+):
     """ Load log-prices from standard models e.g. fBm, Poisson, MRW, SMRW.
 
     :param model_name: fbm, poisson, mrw, smrw, hawkes, turbulence or snp
@@ -120,14 +122,16 @@ def compute_sigma2(x, J, Q, wav_type, wav_norm, high_freq, rpad, cuda, nchunks):
     return sigma2
 
 
-def analyze(x, model_type="scat_spectra", r=2,
-            J=None, Q=1, wav_type="battle_lemarie", wav_norm="l1",
-            high_freq=0.425, rpad=True,
-            normalize='batch_ps', sigma2=None, keep_ps=True,
-            diago_n=True, cross_params=None,
-            qs=[1.0, 2.0], estim_operator=None,
-            histogram_moments=False, skew_redundance=True,
-            cuda=False, nchunks=1):
+def analyze(
+    x, model_type="scat_spectra", r=2,
+    J=None, Q=1, wav_type="battle_lemarie", wav_norm="l1",
+    high_freq=0.425, rpad=True,
+    normalize='batch_ps', sigma2=None, keep_ps=True,
+    diago_n=True, cross_params=None,
+    qs=[1.0, 2.0], estim_operator=None,
+    histogram_moments=False, skew_redundance=True,
+    cuda=False, nchunks=1
+):
     """ Compute scattering based model.
 
     :param x: an array of shape (T, ), (B, T) or (B, N, T)
@@ -198,14 +202,16 @@ def analyze(x, model_type="scat_spectra", r=2,
         raise ValueError("Normalization should be real!.")
 
     # initialize model
-    model = Model(model_type=model_type, T=T, r=r, J=J, Q=Q,
-                  wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
-                  A=None, rpad=rpad, channel_transforms=None, N=N,
-                  Ns=None, diago_n=diago_n, cross_params=cross_params,
-                  sigma2=sigma2, norm_on_the_fly=False,
-                  estim_operator=estim_operator, qs=qs, coeff_types=None,
-                  dtype=x.dtype, histogram_moments=histogram_moments,
-                  skew_redundance=skew_redundance, nchunks=nchunks)
+    model = Model(
+        model_type=model_type, T=T, r=r, J=J, Q=Q,
+        wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
+        A=None, rpad=rpad, channel_transforms=None, N=N,
+        Ns=None, diago_n=diago_n, cross_params=cross_params,
+        sigma2=sigma2, norm_on_the_fly=False,
+        estim_operator=estim_operator, qs=qs, coeff_types=None,
+        dtype=x.dtype, histogram_moments=histogram_moments,
+        skew_redundance=skew_redundance, nchunks=nchunks
+    )
 
     # compute
     if cuda:
@@ -258,14 +264,16 @@ def format_to_real(Rx):
     # new tensor
     y = torch.cat([
         Rx_real.y.real, Rx_complex.y.real, Rx_complex.y.imag
-    ], dim=1)
+    ], dim=-2)
 
     return DescribedTensor(x=Rx.x, y=y, df=df)
 
 
-def self_simi_obstruction_score(x, Rx=None, J=None, Q=1,
-                                wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-                                nchunks=1, cuda=False):
+def self_simi_obstruction_score(
+    x, Rx=None, J=None, Q=1, 
+    wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
+    nchunks=1, cuda=False
+):
     """ Quantifies obstruction to self-similarity in a certain range of scales.
 
     :param x: an array of shape (T, ) or (B, T) or (B, N, T)
@@ -359,10 +367,9 @@ class ScatGenerator(DataGeneratorBase):
     """ A data loader for generation. Caches the generated time-series. """
 
     def __init__(self, B, cache_path, **kwargs):
-        super(ScatGenerator, self).__init__(model_name="scattering",
-                                            B=B,
-                                            cache_path=cache_path,
-                                            **kwargs)
+        super(ScatGenerator, self).__init__(
+            model_name="scattering", B=B, cache_path=cache_path,**kwargs
+        )
 
     def generate_batch(self, i) -> np.ndarray:
         """ Generate a batch of data. """
@@ -386,6 +393,10 @@ class ScatGenerator(DataGeneratorBase):
         # shape to generate
         B, N, T = config['shape']
 
+        # default value
+        if config['J'] is None:
+            config['J'] = int(np.log2(T)) - 3
+
         # normalization by the average power spectrum on the batch
         if x_observed is not None:
             sigma2_target = compute_sigma2(
@@ -394,7 +405,8 @@ class ScatGenerator(DataGeneratorBase):
                 config['rpad'], config['cuda'], config['nchunks']
             )
         else:
-            sigma2_target = config['Rx'].query("c_type=='ps'")
+            sigma2_target = config['Rx'].query("coeff_type=='variance'").y.real
+            sigma2_target = sigma2_target.reshape(*config['shape'][:2], -1)
         sigma2_target = sigma2_target.mean(0, keepdims=True)
         if sigma2_target.is_complex():
             raise ValueError("Normalization sigma2 should be real!.")
@@ -403,7 +415,7 @@ class ScatGenerator(DataGeneratorBase):
         print("Initialize model")
         model = Model(T=T, N=N, Ns=None, channel_transforms=None,
                       norm_on_the_fly=False,
-                      sigma2=sigma2_target, sigma2_L1=None, sigma2_L2=None, sigma2_Lphix=None,
+                      sigma2=sigma2_target,
                       estim_operator=None, A=None,
                       **config)
         if config['cuda']:
@@ -436,23 +448,22 @@ class ScatGenerator(DataGeneratorBase):
                 x0_std = to_numpy(x_observed).std(-1, keepdims=True)
             else:
                 x0_mean, x0_std = 0.0, 1.0
-
-            def gen_wn(mean, std, shape):
-                wn = np.random.randn(*shape)
-                wn -= np.mean(wn, axis=-1, keepdims=True)
-                wn /= np.std(wn, axis=-1, keepdims=True)
-
-                return mean + std * wn
-
-            x0 = gen_wn(x0_mean, x0_std, (B, N, T))
+            x0 = np.random.randn(B, N, T)
+            x0 -= np.mean(x0, axis=-1, keepdims=True)
+            x0 /= np.std(x0, axis=-1, keepdims=True)
+            x0 = x0_mean + x0_std * x0
+        else:
+            x0 = x0[:,i,:,:]     
 
         # init loss, solver and convergence criterium
-        loss = MSELossScat(J=config['J'],
-                           histogram_moments=False,
-                           wrap_avg=config['model_type'] == 'cov')
-        solver = Solver(shape=torch.Size((B, N, T)), model=model, loss=loss,
-                        Rx_target=Rx_target, x0=x0,
-                        cuda=config['cuda'])
+        loss = MSELossScat(
+            J=config['J'], histogram_moments=False, 
+            wrap_avg=config['model_type']=='cov'
+        )
+        solver = Solver(
+            shape=torch.Size((B, N, T)), model=model, loss=loss,
+            Rx_target=Rx_target, x0=x0, cuda=config['cuda']
+        )
         check_conv_criterion = CheckConvCriterion(
             solver=solver, tol=config['tol_optim']
         )
@@ -516,7 +527,7 @@ def generate(x=None, Rx=None, S=1, shape=None,
              coeff_types=None,
              max_iterations=10000, tol_optim=5e-4, seed=None,
              histogram_moments=False,
-             skew_redundance=False,
+             skew_redundance=True,
              nchunks=1,
              cache_path=None, exp_name=None,
              cuda=False, gpus=None, num_workers=1):
@@ -537,7 +548,7 @@ def generate(x=None, Rx=None, S=1, shape=None,
         config['shape'] = config['x'].shape
 
     if x is not None:
-        config['dtype'] = torch.float32 if x.dtype == np.float32 else torch.float64
+        config['dtype'] = torch.float64 if x.dtype == np.float64 else torch.float32
     elif Rx is not None:
         config['dtype'] = Rx.y.real.dtype
 
@@ -567,8 +578,8 @@ def generate(x=None, Rx=None, S=1, shape=None,
 # VIZUALIZE
 ##################
 
-COLORS = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 'red', 'purple', 'black',
-          'paleturquoise'] + ['orchid'] * 20
+COLORS = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 
+          'red', 'purple', 'black', 'paleturquoise'] + ['orchid'] * 20
 
 
 def bootstrap_variance_complex(x, n_points, n_samples):
@@ -625,7 +636,7 @@ def plot_raw(Rx, ax=None, legend=True):
     # average over the batch
     Rx = Rx.mean_batch()
 
-    #
+    # separate real and imaginary parts
     if Rx.y.is_complex():
         Rx = format_to_real(Rx)
     Rx = Rx.sort()
@@ -650,12 +661,14 @@ def plot_raw(Rx, ax=None, legend=True):
             marker='+', markersize=1)
     if legend:
         ax.legend()
-    return Rx.df
+    return ax, Rx.df
 
 
-def plot_marginal_moments(Rxs, estim_bar=False,
-                          axes=None, labels=None,
-                          colors=None, linewidth=3.0, fontsize=30):
+def plot_marginal_moments(
+    Rxs, estim_bar=False,
+    axes=None, labels=None,
+    colors=None, linewidth=3.0, fontsize=30
+):
     """ Plot the marginal moments
         - (wavelet power spectrum) sigma^2(j)
         - (sparsity factors) s^2(j)
@@ -756,8 +769,10 @@ def plot_marginal_moments(Rxs, estim_bar=False,
         ax.grid(True)
 
 
-def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, theta_threshold=0.005,
-                                 axes=None, labels=None, colors=None, fontsize=30, single_plot=False):
+def plot_phase_envelope_spectrum(
+    Rxs, estim_bar=False, self_simi_bar=False, theta_threshold=0.005,
+    axes=None, labels=None, colors=None, fontsize=30, single_plot=False
+):
     """ Plot the phase-envelope cross-spectrum C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
 
     :param Rxs: DescribedTensor or list of DescribedTensor
@@ -906,8 +921,10 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
         ax.grid(True)
 
 
-def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, theta_threshold=0.01,
-                             axes=None, labels=None, colors=None, fontsize=40, d=1):
+def plot_scattering_spectrum(
+    Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, 
+    theta_threshold=0.01, axes=None, labels=None, colors=None, fontsize=40, d=1
+):
     """ Plot the scattering cross-spectrum C_S(a,b) as two graphs : |C_S| and Arg(C_S).
 
     :param Rxs: DescribedTensor or list of DescribedTensor
@@ -1125,11 +1142,12 @@ def set_same_lim(*axes, axis='y'):
         set(ax, (lim_min, lim_max))
 
 
-def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True,
-                   theta_threshold=[0.005, 0.1],
-                   labels=None, colors=None,
-                   linewidth=3.0, fontsize=20,
-                   figsize=None, axes=None):
+def plot_dashboard(
+    Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, 
+    theta_threshold=[0.005, 0.1],
+    labels=None, colors=None, linewidth=3.0, fontsize=20, 
+    figsize=None, axes=None
+):
     """ Plot the scattering covariance dashboard for multi-scale processes composed of:
         - (wavelet power spectrum) sigma^2(j)
         - (sparsity factors) s^2(j)

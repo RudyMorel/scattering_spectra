@@ -31,17 +31,15 @@ ADMISSIBLE_MODEL_TYPES = [
 class ChunkedModule(nn.Module):
     """ Manage chunks on batch dimension. """
 
-    def __init__(self,
-                 #  module: nn.Module,
-                 nchunks: int) -> None:
+    def __init__(self, nchunks: int) -> None:
         super(ChunkedModule, self).__init__()
         self.nchunks = nchunks
 
     @abstractmethod
-    def forward_batch(self, 
-                      x: torch.Tensor,
-                      bs: torch.Tensor | None = None) -> DescribedTensor:
-        """ Forward on the batch dimension. """
+    def forward_batch(
+        self, x: torch.Tensor, bs: torch.Tensor | None = None
+    ) -> DescribedTensor:
+        """ Forward on a single batch. """
         pass
 
     def forward(self, x: torch.Tensor) -> DescribedTensor:
@@ -65,32 +63,34 @@ class ChunkedModule(nn.Module):
 class Model(ChunkedModule):
     """ Model class for analysis and generation. """
 
-    def __init__(self,
-                 model_type: str | None,
-                 T: int,
-                 r: int,
-                 J: int | List[int],
-                 Q: int | List[int],
-                 wav_type: str | List[str],
-                 wav_norm: str | List[str],
-                 high_freq: float | List[float],
-                 A: int | None,
-                 rpad: bool,
-                 channel_transforms: List[torch.Tensor] | None,
-                 N: int,
-                 Ns: List[int] | None,
-                 diago_n: bool,
-                 cross_params: Dict | None,
-                 sigma2: torch.Tensor | None,
-                 norm_on_the_fly: bool,
-                 estim_operator: Estimator | None,
-                 qs: List[float] | None,
-                 coeff_types: List[str] | None,
-                 dtype: torch.dtype | None,
-                 histogram_moments: bool,
-                 skew_redundance: bool,
-                 nchunks: int,
-                 **kwargs):
+    def __init__(
+        self,
+        model_type: str | None,
+        T: int,
+        r: int,
+        J: int | List[int],
+        Q: int | List[int],
+        wav_type: str | List[str],
+        wav_norm: str | List[str],
+        high_freq: float | List[float],
+        A: int | None,
+        rpad: bool,
+        channel_transforms: List[torch.Tensor] | None,
+        N: int,
+        Ns: List[int] | None,
+        diago_n: bool,
+        cross_params: Dict | None,
+        sigma2: torch.Tensor | None,
+        norm_on_the_fly: bool,
+        estim_operator: Estimator | None,
+        qs: List[float] | None,
+        coeff_types: List[str] | None,
+        dtype: torch.dtype | None,
+        histogram_moments: bool,
+        skew_redundance: bool,
+        nchunks: int,
+        **kwargs
+    ):
         super(Model, self).__init__(nchunks)
 
         self.config = locals().copy()
@@ -181,8 +181,12 @@ class Model(ChunkedModule):
             self.coeff_types = coeff_types or self.df.coeff_type.unique().tolist()
 
         # cast model to the right precision
-        if dtype == torch.float64:
+        if dtype == torch.float32:
+            self.float()
+        elif dtype == torch.float64:
             self.double()
+        else:
+            raise ValueError(f"Dtype {dtype} not supported for Scattering model.")
 
     def double(self):
         """ Change model parameters and buffers to double precision (float64 and complex128). """
@@ -194,8 +198,9 @@ class Model(ChunkedModule):
             return t
         return self._apply(cast)
 
-    def compute_scattering(self, x: torch.Tensor, 
-                           bs: torch.Tensor | None= None) -> List[torch.Tensor]:
+    def compute_scattering_coefficients(
+        self, x: torch.Tensor, bs: torch.Tensor | None= None
+    ) -> List[torch.Tensor]:
         """ Compute the Wx, W|Wx|, ..., W|...|Wx|| 
         i.e. standard scattering coefficients. """
         Sx_l = []
@@ -322,8 +327,9 @@ class Model(ChunkedModule):
 
         return df
 
-    def forward_batch(self, x: torch.Tensor, 
-                      bs: torch.Tensor | None = None) -> torch.Tensor:
+    def forward_batch(
+        self, x: torch.Tensor, bs: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         :param x: tensor of shape (B, N, T)
         :param bs: tensor of the indices b1,...,bn of the mini-batch
@@ -336,7 +342,7 @@ class Model(ChunkedModule):
         x = x[:, :, None, None, :]
 
         # compute scattering coefficients Sx(t, j1 ... jr) for r=1,2,...
-        Sx = self.compute_scattering(x, bs)
+        Sx = self.compute_scattering_coefficients(x, bs)
 
         # compute scattering coefficients Sx(t, j1 ... jr)
         if self.model_type is None:
