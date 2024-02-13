@@ -235,7 +235,10 @@ def analyze(x, model_type="scat_spectra", r=2,
                 sigma2_bj = sigma2[:, n, :].reshape(sigma2.shape[0], -1, 1)
                 Rx.y[:, mask_ps, :] = Rx.y[:, mask_ps, :] * sigma2_bj
 
-    return Rx.cpu()
+    if cuda:
+        Rx = Rx.cpu()
+
+    return Rx
 
 
 def format_to_real(Rx):
@@ -515,6 +518,9 @@ def generate(x=None, Rx=None, S=1, shape=None,
              cache_path=None, exp_name=None,
              cuda=False, gpus=None, num_workers=1):
 
+    # to make torch with multiprocessing works
+    torch.set_num_threads(1)
+
     if x0 is not None and x0.ndim != 4:
         raise Exception("If provided, x0 should be of shape (B,nruns,N,T).")
 
@@ -547,6 +553,9 @@ def generate(x=None, Rx=None, S=1, shape=None,
 
     data_generator = ScatGenerator(B=B, **config)
     x_gen = data_generator.load(R=S, num_workers=num_workers)
+
+    # revert to default num of threads
+    torch.set_num_threads(torch.get_num_threads())
 
     return x_gen
 

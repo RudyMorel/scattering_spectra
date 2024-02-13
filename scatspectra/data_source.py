@@ -7,7 +7,8 @@ e.g. a time-series dataset batch would typically be a (B,N,T) array. """
 from typing import List, Tuple, Dict
 from collections import OrderedDict
 import shutil
-from multiprocessing import Pool
+from pathlib import Path
+import torch.multiprocessing as mp
 from pathlib import Path
 import math
 import numpy as np
@@ -310,7 +311,11 @@ class DataGeneratorBase:
         """
         print(f"Model {self.model_name}: generating data ...")
         x_l = []
-        with Pool(processes=num_workers) as pool:
+        try:
+            mp.set_start_method('spawn')
+        except RuntimeError:
+            pass
+        with mp.Pool(processes=num_workers) as pool:
             for result in pool.map(self.worker, list(range(nbatches))):
                 _, x = result
                 x_l.append(x)
