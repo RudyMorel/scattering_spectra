@@ -696,7 +696,7 @@ def plot_marginal_moments(Rxs, estim_bar=False,
     if axes is None:
         ax1 = plt.subplot2grid((1, 2), (0, 0))
         ax2 = plt.subplot2grid((1, 2), (0, 1))
-        axes = [ax1, ax2]
+        axes = np.array([ax1, ax2])
 
     for i_lb, (lb, Rx) in enumerate(zip(labels, Rxs)):
         if 'coeff_type' not in Rx.df.columns:
@@ -723,7 +723,7 @@ def plot_marginal_moments(Rxs, estim_bar=False,
                           np.log(2) * logWx2_err * 2.0 ** logWx2)
             a, b = axes[0].get_ylim()
             avg = (logWx2 + ps_norm_rectifier).mean().item()
-            a_min, b_max = 2 ** (avg - 2), 2 ** (avg + 2)
+            a_min, b_max = 2 ** (avg - 4), 2 ** (avg + 4)
             if i_lb == len(labels) - 1:
                 axes[0].set_ylim(min(a, a_min), max(b, b_max))
             if i_lb == len(labels) - 1 and any([lb != '' for lb in labels]):
@@ -754,20 +754,17 @@ def plot_marginal_moments(Rxs, estim_bar=False,
 
 
 def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, theta_threshold=0.005,
-                                 sigma2=None,
-                                 axes=None, labels=None, colors=None, fontsize=30, single_plot=False, ylim=0.1):
+                                 axes=None, labels=None, colors=None, fontsize=30, single_plot=False):
     """ Plot the phase-envelope cross-spectrum C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
 
     :param Rxs: DescribedTensor or list of DescribedTensor
     :param estim_bar: display estimation error due to estimation on several realizations
     :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
     :param theta_threshold: rules phase instability
-    :param sigma2: override normalization factors
     :param axes: custom axes: array of size 2
     :param labels: list of labels for each model output
     :param fontsize: labels fontsize
     :param single_plot: output all DescribedTensor on a single plot
-    :param ylim: above y limit of modulus graph
     :return:
     """
     if isinstance(Rxs, DescribedTensor):
@@ -851,7 +848,6 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
         plt.xticks(np.arange(1, J).tolist(),
                    [(rf'${j}$' if j % 2 == 1 else '') for j in np.arange(1, J)], fontsize=fontsize)
         plt.xlabel(r'$a$', fontsize=fontsize)
-        plt.ylim(-0.02, ylim)
         if i_lb == 0:
             plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
             plt.yticks(fontsize=fontsize)
@@ -908,19 +904,16 @@ def plot_phase_envelope_spectrum(Rxs, estim_bar=False, self_simi_bar=False, thet
 
 
 def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, theta_threshold=0.01,
-                             sigma2=None,
-                             axes=None, labels=None, colors=None, fontsize=40, ylim=2.0, d=1):
+                             axes=None, labels=None, colors=None, fontsize=40, d=1):
     """ Plot the scattering cross-spectrum C_S(a,b) as two graphs : |C_S| and Arg(C_S).
 
     :param Rxs: DescribedTensor or list of DescribedTensor
     :param estim_bar: display estimation error due to estimation on several realizations
     :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
     :param theta_threshold: rules phase instability
-    :param sigma2: override normalization factors
     :param axes: custom axes: array of size 2 x labels
     :param labels: list of labels for each model output
     :param fontsize: labels fontsize
-    :param ylim: above y limit of modulus graph
     :return:
     """
     if isinstance(Rxs, DescribedTensor):
@@ -1040,7 +1033,6 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
         plt.xticks(np.arange(-J + 1, 0).tolist(), [(rf'${b}$' if b % 2 == 1 else '') for b in np.arange(-J+1, 0)],
                    fontsize=fontsize)
         plt.xlabel(r'$b$', fontsize=fontsize)
-        plt.ylim(-0.02, ylim)
         plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         plt.yticks(fontsize=fontsize)
         plt.locator_params(axis='x', nbins=J - 1)
@@ -1116,11 +1108,24 @@ def plot_scattering_spectrum(Rxs, estim_bar=False, self_simi_bar=False, bootstra
         ax.grid(True)
 
 
+def set_same_lim(*axes, axis='y'):
+    """ Set the same limits for a list of axes. """
+    if axis == "both":
+        set_same_lim(*axes, axis='x')
+        set_same_lim(*axes, axis='y')
+        return
+    get = lambda ax: ax.get_xlim() if axis == 'x' else ax.get_ylim()
+    set = lambda ax, lim: ax.set_xlim(lim) if axis == 'x' else ax.set_ylim(lim)
+    lim_min = min([get(ax)[0] for ax in axes])
+    lim_max = min([get(ax)[1] for ax in axes])
+    for ax in axes:
+        set(ax, (lim_min, lim_max))
+
+
 def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True,
                    theta_threshold=[0.005, 0.1],
-                   sigma2=None,
                    labels=None, colors=None,
-                   linewidth=3.0, fontsize=20, ylim_phase=0.1, ylim_modulus=3.0,
+                   linewidth=3.0, fontsize=20,
                    figsize=None, axes=None):
     """ Plot the scattering covariance dashboard for multi-scale processes composed of:
         - (wavelet power spectrum) sigma^2(j)
@@ -1133,12 +1138,9 @@ def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True,
     :param self_simi_bar: display self-similarity error, it is a measure of scale regularity
     :param bootstrap: time variance computation method
     :param theta_threshold: rules phase instability
-    :param sigma2: override normalization factors
     :param labels: list of labels for each model output
     :param linewidth: lines linewidth
     :param fontsize: labels fontsize
-    :param ylim_phase: graph ylim for the phase
-    :param ylim_modulus: graph ylim for the modulus
     :param figsize: figure size
     :param axes: custom array of axes, should be of shape (2, 2 + nb of representation to plot)
     :return:
@@ -1169,15 +1171,20 @@ def plot_dashboard(Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True,
 
     # phase-envelope cross-spectrum
     plot_phase_envelope_spectrum(
-        Rxs, estim_bar, self_simi_bar, theta_threshold[0], sigma2,
-        axes[:, 1], labels, colors, fontsize, False, ylim_phase
+        Rxs, estim_bar, self_simi_bar, theta_threshold[0],
+        axes[:, 1], labels, colors, fontsize, False
     )
+    ylim = max(0.1, axes[0, 1].get_ylim()[1])
+    axes[0, 1].set_ylim(-0.02, ylim)
 
     # scattering cross spectrum
     plot_scattering_spectrum(
-        Rxs, estim_bar, self_simi_bar, bootstrap, theta_threshold[1], sigma2,
-        axes[:, 2:], labels, colors, fontsize, ylim_modulus
+        Rxs, estim_bar, self_simi_bar, bootstrap, theta_threshold[1],
+        axes[:, 2:], labels, colors, fontsize
     )
+    ylim = max([1] + [ax.get_ylim()[1] for ax in axes[0, 2:]])
+    for ax in axes[0, 2:]:
+        ax.set_ylim(-0.02, ylim)
 
     plt.tight_layout()
 
