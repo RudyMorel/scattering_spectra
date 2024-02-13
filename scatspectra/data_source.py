@@ -277,6 +277,8 @@ class DataGeneratorBase:
                 return f"_{key[:2]}{value:.1e}"
             elif isinstance(value, bool):
                 return f"_{key[:2]}{int(value)}"
+            elif key == "coeff_types":  # TODO: make this more general
+                return "".join(sorted("".join([v[:2] for v in value])))
             else:
                 return ''
         dname = self.model_name + f'_B{self.B}' + format_path(None, kwargs)
