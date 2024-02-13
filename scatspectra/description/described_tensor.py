@@ -52,6 +52,12 @@ class DescribedTensor:
             x=ld['x'], y=ld['y'], df=ld['df'], config=ld['config']
         )
 
+    def eval(self, 
+             query_str: str) -> np.ndarray:
+        """ Evaluate a query on the description and return the corresponding 
+        subset of the tensor. """
+        return self.df.eval(query_str).values
+
     def query(self,
               query_str: str | None = None,
               **kwargs) -> DescribedTensor:
