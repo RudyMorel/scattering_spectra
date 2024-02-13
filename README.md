@@ -4,7 +4,7 @@ The Scattering Spectra [1] are a set of statistics that provide an interpretable
 
 They can be used for time-series **analysis** and **generation**, but also to assess **self-similarity** in the data as well as to detect **non-Gaussianity**.
 
-For a quick start, see `tutorial.ipynb`.
+For a quick start, see `tutorial.ipynb`
 
 ## Installation
 
@@ -94,7 +94,7 @@ axes[1].set_ylim(-0.1,0.1)
 
 ![alt text](illustration/generation.png "Generation of a signal")
 
-See `tutorial.ipynb.` and `testing.ipynb` for more code examples. 
+See `tutorial.ipynb` and `testing.ipynb` for more code examples. 
 
 
 [1] "Scale Dependencies and Self-Similar Models with Wavelet Scattering Spectra"
