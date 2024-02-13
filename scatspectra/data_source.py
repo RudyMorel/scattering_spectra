@@ -284,7 +284,7 @@ class DataGeneratorBase:
         print(f"Model {self.model_name}: generating data ...")
         x_l = []
         try:
-            mp.set_start_method('spawn')
+            mp.set_start_method('spawn')  # TODO: seems to slow down execution
         except RuntimeError:
             pass
         with mp.Pool(processes=num_workers) as pool:
