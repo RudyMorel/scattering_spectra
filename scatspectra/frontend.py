@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 from scatspectra.utils import to_numpy
 from scatspectra.data_source import (
     DataGeneratorBase,
-    PoissonGenerator, FBmGenerator, MRWGenerator, SMRWGenerator
+    PoissonGenerator, FBmGenerator, MRWGenerator, SMRWGenerator, SPDaily
 )
 from scatspectra.models import Model, ADMISSIBLE_MODEL_TYPES
 from scatspectra.layers import (
@@ -43,7 +43,7 @@ from scatspectra.description import make_description_compatible
 # DATA LOADING
 ##################
 
-def load_data(model_name, R, T,
+def load_data(name, R=None, T=None,
               cache_path=None, num_workers=1,
               **model_params):
     """ Load log-prices from standard models e.g. fBm, Poisson, MRW, SMRW.
@@ -56,6 +56,9 @@ def load_data(model_name, R, T,
     :param model_params: model parameters (e.g. intermittency parameter for MRW)
     :return: dataloader
     """
+    if name == 'snp':
+        return SPDaily().x
+
     generator = {
         'fbm': FBmGenerator,
         'poisson': PoissonGenerator,
@@ -63,17 +66,14 @@ def load_data(model_name, R, T,
         'smrw': SMRWGenerator,
     }
 
-    if model_name == 'snp':
-        raise ValueError("S&P data is private, please provide your own data.")
-    if model_name == 'heliumjet':
-        raise ValueError(
-            "Helium jet data is private, please provide your own data.")
-    if model_name == 'hawkes':
+    if name == 'heliumjet':
+        raise ValueError("Helium jet data is private.")
+    if name == 'hawkes':
         raise ValueError("Hawkes data is not yet supported.")
-    if model_name not in generator.keys():
+    if name not in generator.keys():
         raise ValueError("Unrecognized model name.")
-
-    data_gen = generator[model_name](
+    
+    data_gen = generator[name](
         cache_path=cache_path, T=T, **model_params
     )
     x = data_gen.load(R, num_workers)

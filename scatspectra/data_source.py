@@ -11,6 +11,7 @@ from multiprocessing import Pool
 from pathlib import Path
 import math
 import numpy as np
+import pandas as pd
 
 from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
@@ -445,3 +446,38 @@ class SMRWGenerator(DataGeneratorBase):
 
     def generate_batch(self, i: int) -> np.ndarray:
         return skewed_mrw(**self.config)[:, None, :]
+
+
+class SPDaily(PriceData):
+    """ S&P500 daily prices based on data obtained from the Wall Street Journal
+    https://www.wsj.com/market-data/quotes/index/SPX/historical-prices """
+
+    def __init__(self, start='03-01-2000', end='07-02-2024'):
+        
+        # load full time-series
+        filename = Path(__file__).parent / 'snp_WSJ_08_02_2024.csv'
+        df = pd.read_csv(filename)
+
+        def formatter(dt_str):
+            m, d, y = [x for x in dt_str.split('/')]
+            m, d, y = int(m), int(d), int('20'+y)
+            return pd.Timestamp(year=y, month=m, day=d)
+
+        df.index = pd.DatetimeIndex(df['Date'].apply(formatter))
+        df = df.drop(columns=['Date']).sort_index()
+
+        max_date = df.index.max()
+        min_date = df.index.min()
+
+        # select dates
+        start = pd.to_datetime(start, dayfirst=True)
+        end = pd.to_datetime(end, dayfirst=True)
+
+        if start < min_date or end > max_date:
+            raise ValueError("Dates are out of range for available date.")
+
+        df = df[(df.index>=start) & (df.index<=end)]
+        x = df[' Close'].values
+        dts = df.index
+
+        super(SPDaily, self).__init__(x=x[None, None, :], dts=dts)
