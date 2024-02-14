@@ -544,7 +544,7 @@ def generate(
 
     gpus = config['gpus']
     if gpus is not None and isinstance(gpus, str):
-        gpus = [int(gpu) for gpu in gpus.split(',')]
+        config['gpus'] = [int(gpu) for gpu in gpus.split(',')]
 
     if config['shape'] is None:
         config['shape'] = config['x'].shape
@@ -567,7 +567,7 @@ def generate(
     else:
         raise Exception("Should provide the shape of data to generate.")
 
-    data_generator = ScatGenerator(B=B, **config)
+    data_generator = ScatGenerator(B=B, **{k: v for k, v in config.items() if k != 'S'})
     x_gen = data_generator.load(R=S, num_workers=num_workers)
 
     # revert to default num of threads
