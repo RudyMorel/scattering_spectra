@@ -366,10 +366,11 @@ def self_simi_obstruction_score(
 class ScatGenerator(DataGeneratorBase):
     """ A data loader for generation. Caches the generated time-series. """
 
-    def __init__(self, B, cache_path, **kwargs):
+    def __init__(self, B, cache_path, verbose, **kwargs):
         super(ScatGenerator, self).__init__(
             model_name="scattering", B=B, cache_path=cache_path,**kwargs
         )
+        self.verbose = verbose
 
     def generate_batch(self, i) -> np.ndarray:
         """ Generate a batch of data. """
@@ -412,7 +413,7 @@ class ScatGenerator(DataGeneratorBase):
             raise ValueError("Normalization sigma2 should be real!.")
 
         # MODEL
-        print("Initialize model")
+        if self.verbose: print("Initialize model")
         model = Model(T=T, N=N, Ns=None, channel_transforms=None,
                       norm_on_the_fly=False,
                       sigma2=sigma2_target,
@@ -424,19 +425,20 @@ class ScatGenerator(DataGeneratorBase):
                 x_observed = x_observed.cuda()
 
         if config['Rx'] is None:
-            print("Preparing target representation")
+            if self.verbose: print("Preparing target representation")
             Rx_target = model(x_observed)
         else:
             Rx_target = config['Rx'].clone()
             mask = Rx_target.eval("coeff_type=='variance'")
             Rx_target.y[:,mask,:] = 1.0
 
-        if model.all_coeff_types is not None:
-            print(f"Model {config['model_type']} based on " +
-                  f"{model.count_coefficients():,} statistics: ")
-            for ctype in model.df.coeff_type.sort_values().unique():
-                ncoeffs = model.count_coefficients(f"coeff_type=='{ctype}'")
-                print(f" ---- {ctype} : {ncoeffs}")
+        if self.verbose:
+            if model.all_coeff_types is not None:
+                print(f"Model {config['model_type']} based on " +
+                    f"{model.count_coefficients():,} statistics: ")
+                for ctype in model.df.coeff_type.sort_values().unique():
+                    ncoeffs = model.count_coefficients(f"coeff_type=='{ctype}'")
+                    print(f" ---- {ctype} : {ncoeffs}")
 
         # OPTIM
         # initial time-series
@@ -465,7 +467,7 @@ class ScatGenerator(DataGeneratorBase):
             Rx_target=Rx_target, x0=x0, cuda=config['cuda']
         )
         check_conv_criterion = CheckConvCriterion(
-            solver=solver, tol=config['tol_optim']
+            solver=solver, tol=config['tol_optim'], verbose=self.verbose
         )
 
         method, maxfun, jac = config['method'], config['maxfun'], config['jac']
@@ -503,13 +505,14 @@ class ScatGenerator(DataGeneratorBase):
 
             if not isinstance(msg, str):
                 msg = msg.decode("ASCII")
-
-            print(f"Optimization Exit Message : {msg}")
-            print(f"found parameters in {toc - tic:0.2f}s, {it}" +
-                  f" iterations -- {it / (toc - tic):0.2f}it/s")
-            print(f"    abs sqrt error {flo ** 0.5:.2E}")
-            print(f"    relative gradient error {fgr:.2E}")
-            print(f"    loss0 {np.sqrt(solver.loss0):.2E}")
+            
+            if self.verbose: 
+                print(f"Optimization Exit Message : {msg}")
+                print(f"found parameters in {toc - tic:0.2f}s, {it}" +
+                    f" iterations -- {it / (toc - tic):0.2f}it/s")
+                print(f"    abs sqrt error {flo ** 0.5:.2E}")
+                print(f"    relative gradient error {fgr:.2E}")
+                print(f"    loss0 {np.sqrt(solver.loss0):.2E}")
 
             if config['dtype'] == torch.float32:
                 x_synt = x_synt.astype(np.float32)
@@ -531,7 +534,8 @@ def generate(
     skew_redundance=True,
     nchunks=1,
     cache_path=None, exp_name=None,
-    cuda=False, gpus=None, num_workers=1
+    cuda=False, gpus=None, num_workers=1,
+    verbose=True
 ):
 
     # to make torch with multiprocessing works
@@ -566,8 +570,11 @@ def generate(
         B = shape[0]
     else:
         raise Exception("Should provide the shape of data to generate.")
-
-    data_generator = ScatGenerator(B=B, **{k: v for k, v in config.items() if k != 'S'})
+    
+    data_generator = ScatGenerator(
+        B=B, verbose=verbose, 
+        **{k: v for k, v in config.items() if k not in ['S','num_workers','verbose']}
+    )
     x_gen = data_generator.load(R=S, num_workers=num_workers)
 
     # revert to default num of threads

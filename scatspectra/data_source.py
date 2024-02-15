@@ -8,6 +8,7 @@ from typing import List, Tuple, Dict
 from collections import OrderedDict
 import shutil
 from pathlib import Path
+from tqdm import tqdm
 import torch.multiprocessing as mp
 from pathlib import Path
 import math
@@ -162,7 +163,7 @@ class PriceData:
         if x_init is not None and isinstance(x_init, np.ndarray) and \
                 (x_init.ndim > 0) and x_init.shape != x[..., 0].shape:
             raise ValueError("Wrong x_init format in PriceData.")
-
+        
         self.dts = dts
 
         # set correct initial value through multiplication
@@ -288,9 +289,11 @@ class DataGeneratorBase:
         except RuntimeError:
             pass
         with mp.Pool(processes=num_workers) as pool:
-            for result in pool.map(self.worker, list(range(nbatches))):
-                _, x = result
-                x_l.append(x)
+            with tqdm(total=nbatches) as pbar:
+                for result in pool.imap_unordered(self.worker, list(range(nbatches))):
+                    _, x = result
+                    x_l.append(x)
+                    pbar.update()
         print("Finished.")
 
         return x_l

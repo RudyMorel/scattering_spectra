@@ -25,13 +25,15 @@ def format_np(x):
 
 class Solver(nn.Module):
     """ A class that contains all information necessary for generation. """
-    def __init__(self,
-                 shape: torch.Size,
-                 model: nn.Module,
-                 loss: nn.Module,
-                 Rx_target: DescribedTensor,
-                 x0: np.ndarray,
-                 cuda: bool) -> None:
+    def __init__(
+        self,
+        shape: torch.Size,
+        model: nn.Module,
+        loss: nn.Module,
+        Rx_target: DescribedTensor,
+        x0: np.ndarray,
+        cuda: bool
+    ):
         super(Solver, self).__init__()
 
         self.model = model
@@ -108,11 +110,14 @@ class MaxIteration(Exception):
 
 class CheckConvCriterion:
     """ A callback function given to the optimizer. """
-    def __init__(self,
-                 solver: Solver,
-                 tol: float,
-                 max_wait: int = 1000,
-                 save_data_evolution_p: bool = False):
+    def __init__(
+        self,
+        solver: Solver,
+        tol: float,
+        max_wait: int = 1000,
+        save_data_evolution_p: bool = False,
+        verbose: bool = True
+    ):
         self.solver = solver
         self.tol = tol  # stops when |Rx-Rx_target| / |Rx_target|   <  tol
         self.result = None
@@ -123,6 +128,7 @@ class CheckConvCriterion:
         self.gerr = None
         self.tic = time()
 
+        self.verbose = verbose
         self.max_wait, self.wait = max_wait, 0
         self.save_data_evolution_p = save_data_evolution_p
 
@@ -166,16 +172,14 @@ class CheckConvCriterion:
     def print_info_line(self) -> None:
         delta_t = time() - self.tic
 
-        def cap(pct):
-            return pct if pct < 1e3 else np.inf
-
-        print(colored(
-            f"{self.counter:6}it in {self.hms_string(delta_t)} "
-            + f"( {self.counter / delta_t:.2f} it/s )"
-            + " .... "
-            + f"err {np.sqrt(self.err):.2E}",
-            'cyan'
-        ))
+        if self.verbose:
+            print(colored(
+                f"{self.counter:6}it in {self.hms_string(delta_t)} "
+                + f"( {self.counter / delta_t:.2f} it/s )"
+                + " .... "
+                + f"err {np.sqrt(self.err):.2E}",
+                'cyan'
+            ))
 
     @staticmethod
     def hms_string(sec_elapsed: float) -> str:
