@@ -11,7 +11,7 @@ def load_data(filename: str, /) -> pd.DataFrame:
     Returns:
         pd.DataFrame: dataset
     """
-    filepath = pkg_resources.resource_filename(__name__, "data/" + filename)
+    filepath = pkg_resources.resource_filename(__name__, "" + filename)
     if filepath.endswith(".csv"):
         return pd.read_csv(filepath)
     if filepath.endswith(".json"):
