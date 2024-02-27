@@ -19,4 +19,4 @@ setuptools.setup(
     license='MIT',
     install_requires=reqs,
     packages=setuptools.find_packages(),
-    package_data={'scatspectra': ['snp_WSJ_08_02_2024.csv']})
+    include_package_data=True)
