@@ -476,7 +476,7 @@ class SPDaily(PriceData):
             raise ValueError("Dates are out of range for available date.")
 
         df = df[(df.index >= start) & (df.index <= end)]
-        x = df[" Close"].values
+        x = df["Close"].values
         dts = df.index
 
         super(SPDaily, self).__init__(x=x[None, None, :], dts=dts, **kwargs)
