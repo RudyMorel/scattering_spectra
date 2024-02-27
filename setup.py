@@ -18,4 +18,5 @@ setuptools.setup(
     url='https://github.com/RudyMorel/scattering_spectra',
     license='MIT',
     install_requires=reqs,
-    packages=setuptools.find_packages())
+    packages=setuptools.find_packages(),
+    package_data={'scatspectra': ['scatspectra/snp_WSJ_08_02_2024.csv']})
