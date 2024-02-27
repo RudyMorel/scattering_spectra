@@ -18,6 +18,7 @@ import pandas as pd
 from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
 
+from scatspectra.data import snp_data
 
 class TimeSeriesDataset:
     """ Time-series dataset stored in a directory. Each file in the directory 
@@ -443,17 +444,9 @@ class SPDaily(PriceData):
     def __init__(self, start='03-01-2000', end='07-02-2024'):
         
         # load full time-series
-        filename = Path(__file__).parent / 'snp_WSJ_08_02_2024.csv'
-        df = pd.read_csv(filename)
+        df = snp_data
 
-        def formatter(dt_str):
-            m, d, y = [x for x in dt_str.split('/')]
-            m, d, y = int(m), int(d), int('20'+y)
-            return pd.Timestamp(year=y, month=m, day=d)
-
-        df.index = pd.DatetimeIndex(df['Date'].apply(formatter))
-        df = df.drop(columns=['Date']).sort_index()
-
+        # check dates
         max_date = df.index.max()
         min_date = df.index.min()
 
