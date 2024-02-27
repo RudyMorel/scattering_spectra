@@ -19,4 +19,4 @@ setuptools.setup(
     license='MIT',
     install_requires=reqs,
     packages=setuptools.find_packages(),
-    package_data={"scatspectra" : ["data/*.csv", "data/*.pkl"]})
+    package_data={"scatspectra" : ["scatspectra/data/*.csv", "scatspectra/data/*.pkl"]})
