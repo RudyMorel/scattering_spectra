@@ -441,12 +441,21 @@ class SPDaily(PriceData):
     """ S&P500 daily prices based on data obtained from the Wall Street Journal
     https://www.wsj.com/market-data/quotes/index/SPX/historical-prices """
 
-    def __init__(self, start='03-01-2000', end='07-02-2024'):
-        
+    def __init__(
+        self, start: str = "03-01-2000", end: str = "07-02-2024", **kwargs
+    ) -> None:
+        """Initialize the dataset.
+
+        Args:
+            start (str, optional): start date. Defaults to '03-01-2000'.
+            end (str, optional): end date. Defaults to '07-02-2024'.
+
+        Raises:
+            ValueError: if selected dates are out of range for available data.
+        """
         # load full time-series
         df = snp_data
 
-        # check dates
         max_date = df.index.max()
         min_date = df.index.min()
 
@@ -457,8 +466,8 @@ class SPDaily(PriceData):
         if start < min_date or end > max_date:
             raise ValueError("Dates are out of range for available date.")
 
-        df = df[(df.index>=start) & (df.index<=end)]
-        x = df[' Close'].values
+        df = df[(df.index >= start) & (df.index <= end)]
+        x = df[" Close"].values
         dts = df.index
 
-        super(SPDaily, self).__init__(x=x[None, None, :], dts=dts)
+        super(SPDaily, self).__init__(x=x[None, None, :], dts=dts, **kwargs)
