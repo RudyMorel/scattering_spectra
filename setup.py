@@ -15,7 +15,7 @@ setuptools.setup(
     'Analysis and generation of time-series with Scattering Spectra',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/M2QF/scattering_spectra',
+    url='https://github.com/RudyMorel/scattering_spectra',
     license='MIT',
     install_requires=reqs,
     packages=setuptools.find_packages(),
