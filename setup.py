@@ -18,5 +18,4 @@ setuptools.setup(
     url='https://github.com/M2QF/scattering_spectra',
     license='MIT',
     install_requires=reqs,
-    packages=setuptools.find_packages(),
-    package_data={'scatspectra': ['scatspectra/data/*.pkl']})
+    packages=setuptools.find_packages())
