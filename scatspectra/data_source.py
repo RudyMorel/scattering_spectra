@@ -4,6 +4,7 @@ Notations
 - N: number of data channels (N>1 : multivariate process)
 - T: number of data samples (i.e time samples)
 e.g. a time-series dataset batch would typically be a (B,N,T) array. """
+
 from typing import List, Tuple, Dict
 from collections import OrderedDict
 import shutil
@@ -18,11 +19,13 @@ import pandas as pd
 from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
 
+from scatspectra.data import snp_data
+
 
 class TimeSeriesDataset:
-    """ Time-series dataset stored in a directory. Each file in the directory 
-    should contain an array of same shape (B,N,T) with B the batch size, N the 
-    number of time-series channels and T the number of samples. """
+    """Time-series dataset stored in a directory. Each file in the directory
+    should contain an array of same shape (B,N,T) with B the batch size, N the
+    number of time-series channels and T the number of samples."""
 
     def __init__(
         self,
@@ -30,11 +33,11 @@ class TimeSeriesDataset:
         R: int,
         load: bool = False,
         slices: Dict[str, slice] | None = None,
-        batch_shape=None
+        batch_shape=None,
     ):
         """
         :param dpath: path to the directory containing time-series
-        :param R: number of time series to load 
+        :param R: number of time series to load
         :param load: load data at initialization
         :param slices: the slices to apply to each batch file
         """
@@ -44,8 +47,9 @@ class TimeSeriesDataset:
             raise ValueError("Dataset is empty.")
 
         if R is not None and slices is not None:
-            assert R == sum([sl.stop - sl.start for sl in slices.values()]), \
-                "R and slices are not consistent."
+            assert R == sum(
+                [sl.stop - sl.start for sl in slices.values()]
+            ), "R and slices are not consistent."
 
         self.R = R
 
@@ -55,7 +59,7 @@ class TimeSeriesDataset:
         # file paths that will be loaded
         all_fpaths = list(dpath.iterdir())
         if slices is None:
-            self.fpaths = all_fpaths[:math.ceil(R/self.B)]
+            self.fpaths = all_fpaths[: math.ceil(R / self.B)]
             self._init_slices()
         else:
             self.fpaths = [dpath / k for k in slices.keys()]
@@ -63,8 +67,10 @@ class TimeSeriesDataset:
 
         R_available = len(all_fpaths) * self.B
         if R > R_available:
-            raise ValueError(f"The dataset contains only {R_available} time-" +
-                             f"series but {R} required.")
+            raise ValueError(
+                f"The dataset contains only {R_available} time-"
+                + f"series but {R} required."
+            )
 
         # load data
         self.x = None
@@ -73,27 +79,25 @@ class TimeSeriesDataset:
 
     @staticmethod
     def infer_shape(dpath) -> Tuple[int, int, int]:
-        """ Infer the shape of a time-series batch in the directory. """
+        """Infer the shape of a time-series batch in the directory."""
         return np.load(next(dpath.iterdir())).shape
 
     def _init_slices(self) -> None:
-        """ Default slices to apply to each batch."""
-        self._slices = OrderedDict({
-            fp.name: slice(0, self.B) for fp in self.fpaths[:-1]
-        })
+        """Default slices to apply to each batch."""
+        self._slices = OrderedDict(
+            {fp.name: slice(0, self.B) for fp in self.fpaths[:-1]}
+        )
         last_stop = self.R % self.B + self.B * (self.R % self.B == 0)
         self._slices[self.fpaths[-1].name] = slice(0, last_stop)
 
     def load(self) -> np.ndarray:
-        """ Load the dataset. """
+        """Load the dataset."""
 
         # load only once
         if self.x is None:
 
             # load data
-            x_l = [
-                np.load(fp)[self._slices[fp.name], :, :] for fp in self.fpaths
-            ]
+            x_l = [np.load(fp)[self._slices[fp.name], :, :] for fp in self.fpaths]
 
             # concatenate
             x = np.concatenate(x_l)
@@ -101,8 +105,8 @@ class TimeSeriesDataset:
 
         return self.x
 
-    def split(self, num_splits: int) -> List['TimeSeriesDataset']:
-        """ Split this object into almost equal objects. """
+    def split(self, num_splits: int) -> List["TimeSeriesDataset"]:
+        """Split this object into almost equal objects."""
         fpaths_splits = list_split(self.fpaths, num_splits)
         slices_splits = [
             OrderedDict({fp.name: self._slices[fp.name] for fp in fps})
@@ -120,14 +124,14 @@ class TimeSeriesDataset:
 
 
 def cumsum_zero(dx):
-    """ Cumsum of a vector preserving dimension through zero-pading. """
+    """Cumsum of a vector preserving dimension through zero-pading."""
     res = np.cumsum(dx, axis=-1)
     res = np.concatenate([np.zeros_like(res[..., 0:1]), res], axis=-1)
     return res
 
 
 class PriceData:
-    """ Handle positive price time-series. """
+    """Handle positive price time-series."""
 
     def __init__(
         self,
@@ -136,7 +140,7 @@ class PriceData:
         lnx: np.ndarray | None = None,
         dlnx: np.ndarray | None = None,
         x_init: float | np.ndarray | None = None,
-        dts=None
+        dts=None,
     ):
         """
         :param x: prices
@@ -154,16 +158,21 @@ class PriceData:
             elif dlnx is not None:
                 x = self.from_dln_to_x(dlnx)
             else:
-                raise ValueError("One and only one argument x,dx,lnx,dlnx" +
-                                 " should be provided.")
+                raise ValueError(
+                    "One and only one argument x,dx,lnx,dlnx" + " should be provided."
+                )
 
         if x_init is not None:
             x_init = np.array(x_init)
 
-        if x_init is not None and isinstance(x_init, np.ndarray) and \
-                (x_init.ndim > 0) and x_init.shape != x[..., 0].shape:
+        if (
+            x_init is not None
+            and isinstance(x_init, np.ndarray)
+            and (x_init.ndim > 0)
+            and x_init.shape != x[..., 0].shape
+        ):
             raise ValueError("Wrong x_init format in PriceData.")
-        
+
         self.dts = dts
 
         # set correct initial value through multiplication
@@ -173,10 +182,8 @@ class PriceData:
         self.dlnx = np.diff(np.log(x))
 
     @staticmethod
-    def rescale(
-        x: np.ndarray, x_init: np.ndarray | None, additive: bool
-    ) -> np.ndarray:
-        """ Impose the right starting point to each time-series in x. """
+    def rescale(x: np.ndarray, x_init: np.ndarray | None, additive: bool) -> np.ndarray:
+        """Impose the right starting point to each time-series in x."""
         if x_init is not None:
             if additive:
                 x = x - x[..., :1] + x_init[..., None]
@@ -199,14 +206,10 @@ class PriceData:
 
 
 class DataGeneratorBase:
-    """ Base multi-processing dataset generator. """
+    """Base multi-processing dataset generator."""
 
     def __init__(
-        self,
-        model_name: str,
-        B: int,
-        cache_path: Path | None = None,
-        **kwargs
+        self, model_name: str, B: int, cache_path: Path | None = None, **kwargs
     ):
         """
         :param model_name: name of the generative model
@@ -217,31 +220,30 @@ class DataGeneratorBase:
         self.model_name = model_name
         self.B = B
 
-        self.config = {'B': B, **kwargs}
+        self.config = {"B": B, **kwargs}
 
         self.dpath = None
         if cache_path:
             self.dpath = cache_path / self.dirname(**kwargs)
             if len(str(self.dpath)) > 255:
-                raise ValueError(
-                    f"Path is too long ({len(str(self.dpath))} > 250)."
-                )
+                raise ValueError(f"Path is too long ({len(str(self.dpath))} > 250).")
 
         # Create cache directory.
         if self.dpath:
             self.dpath.mkdir(parents=True, exist_ok=True)
 
     def dirname(self, **kwargs) -> str:
-        """ Define directory name for this model with its params (kwargs). """
+        """Define directory name for this model with its params (kwargs)."""
+
         def format_path(key, value):
             if isinstance(value, dict):
                 return "".join([format_path(k, v) for (k, v) in value.items()])
             elif value is None:
                 return "_"
             elif isinstance(value, str):
-                if value == 'True':
+                if value == "True":
                     value = 1
-                elif value == 'False':
+                elif value == "False":
                     value = 0
                 return f"_{key[:2]}_{value}"
             elif isinstance(value, int):
@@ -253,16 +255,17 @@ class DataGeneratorBase:
             elif key == "coeff_types":  # TODO: make this more general
                 return "".join(sorted("".join([v[:2] for v in value])))
             else:
-                return ''
-        dname = self.model_name + f'_B{self.B}' + format_path(None, kwargs)
-        dname = dname.replace('.', '_').replace('-', '_').replace('+', '_')
+                return ""
+
+        dname = self.model_name + f"_B{self.B}" + format_path(None, kwargs)
+        dname = dname.replace(".", "_").replace("-", "_").replace("+", "_")
         return dname
 
     def generate_batch(self, i: int) -> np.ndarray:
         raise NotImplemented
 
     def worker(self, i: int):
-        """ Generate a batch of time-series and save it if cache is used. """
+        """Generate a batch of time-series and save it if cache is used."""
         np.random.seed(None)
         try:
             x = self.generate_batch(i)
@@ -277,15 +280,15 @@ class DataGeneratorBase:
             raise e
 
     def _generate(self, nbatches: int, num_workers: int):
-        """ Generate data in parallel and save it if cache is used.
+        """Generate data in parallel and save it if cache is used.
 
-        :param nbatches: number of data batches to generate 
+        :param nbatches: number of data batches to generate
         :param num_workers: number of parallel workers
         """
         print(f"Model {self.model_name}: generating data ...")
         x_l = []
         try:
-            mp.set_start_method('spawn')  # TODO: seems to slow down execution
+            mp.set_start_method("spawn")  # TODO: seems to slow down execution
         except RuntimeError:
             pass
         with mp.Pool(processes=num_workers) as pool:
@@ -299,38 +302,40 @@ class DataGeneratorBase:
         return x_l
 
     def load(self, R: int, num_workers: int = 1) -> np.ndarray:
-        """ Load data, generate it if cache is used.
+        """Load data, generate it if cache is used.
 
         :param R: number of realizations (number of time-series)
         :param num_workers: number of parallel workers
         """
         # if there is a cache, use it
         if self.dpath is not None and self.dpath.is_dir():
-            print(f"Model {self.model_name}: " +
-                  f"using cache directory {self.dpath.name}.")
+            print(
+                f"Model {self.model_name}: "
+                + f"using cache directory {self.dpath.name}."
+            )
             # generate additional data if needed
             nbatches_avail = sum(1 for _ in self.dpath.iterdir())
             if nbatches_avail * self.B < R:
-                nbatches = math.ceil(R/self.B) - nbatches_avail
+                nbatches = math.ceil(R / self.B) - nbatches_avail
                 self._generate(nbatches, num_workers)
 
             return TimeSeriesDataset(self.dpath, R, True).load()
 
         # otherwise, generate data
-        nbatches = math.ceil(R/self.B)
+        nbatches = math.ceil(R / self.B)
         x_l = self._generate(nbatches, num_workers)
-        x = np.concatenate(x_l, axis=0)[:R,:,:]
+        x = np.concatenate(x_l, axis=0)[:R, :, :]
 
         return x
 
     def erase_cache(self) -> None:
-        """ Erase cache if it exists. """
+        """Erase cache if it exists."""
         if self.dpath is not None and self.dpath.is_dir():
             shutil.rmtree(self.dpath)
 
 
 class PoissonGenerator(DataGeneratorBase):
-    """ Poisson jump process. """
+    """Poisson jump process."""
 
     def __init__(
         self,
@@ -339,7 +344,7 @@ class PoissonGenerator(DataGeneratorBase):
         signed: bool = False,
         B: int = 64,
         cache_path: Path | None = None,
-        **kwargs
+        **kwargs,
     ):
         """
         :param T: number of time samples
@@ -348,7 +353,7 @@ class PoissonGenerator(DataGeneratorBase):
         :param B: batch size
         """
         super(PoissonGenerator, self).__init__(
-            'poisson', B, cache_path, T=T, mu=mu, signed=signed, **kwargs
+            "poisson", B, cache_path, T=T, mu=mu, signed=signed, **kwargs
         )
 
     def generate_batch(self, i: int) -> np.ndarray:
@@ -356,29 +361,24 @@ class PoissonGenerator(DataGeneratorBase):
 
 
 class FBmGenerator(DataGeneratorBase):
-    """ Fractional Brownian motion. """
+    """Fractional Brownian motion."""
 
     def __init__(
-        self,
-        T: int,
-        H: float,
-        B: int = 64,
-        cache_path: Path | None = None,
-        **kwargs
+        self, T: int, H: float, B: int = 64, cache_path: Path | None = None, **kwargs
     ):
         """
         :param T: number of time samples
         :param H: Hurst exponent
         :param B: batch size
         """
-        super(FBmGenerator, self).__init__('fbm', B, cache_path, T=T, H=H, **kwargs)
+        super(FBmGenerator, self).__init__("fbm", B, cache_path, T=T, H=H, **kwargs)
 
     def generate_batch(self, i: int) -> np.ndarray:
         return fbm(**self.config)[:, None, :]
 
 
 class MRWGenerator(DataGeneratorBase):
-    """ Multifractal random walk. """
+    """Multifractal random walk."""
 
     def __init__(
         self,
@@ -387,17 +387,17 @@ class MRWGenerator(DataGeneratorBase):
         lam: float,
         B: int = 64,
         cache_path: Path | None = None,
-        **kwargs
+        **kwargs,
     ):
         """
         :param T: number of time samples
         :param H: Hurst exponent
-        :param lam: intermittency parameter, if lam=0 then becomes a fBm 
+        :param lam: intermittency parameter, if lam=0 then becomes a fBm
         :param B: batch size
         :param cache_path: _description_, defaults to None
         """
         super(MRWGenerator, self).__init__(
-            'MRW', B, cache_path, T=T, L=T, H=H, lam=lam,  **kwargs
+            "MRW", B, cache_path, T=T, L=T, H=H, lam=lam, **kwargs
         )
 
     def generate_batch(self, i: int) -> np.ndarray:
@@ -405,7 +405,7 @@ class MRWGenerator(DataGeneratorBase):
 
 
 class SMRWGenerator(DataGeneratorBase):
-    """ Skewed Multifractal Random Walk. """
+    """Skewed Multifractal Random Walk."""
 
     def __init__(
         self,
@@ -415,21 +415,31 @@ class SMRWGenerator(DataGeneratorBase):
         K0: float = 0.035,
         alpha: float = 0.23,
         beta: float = 0.5,
-        gamma: float = 1/(2**12)/64,
+        gamma: float = 1 / (2**12) / 64,
         B: int = 64,
         cache_path: Path | None = None,
-        **kwargs
+        **kwargs,
     ):
         """
         :param T: number of time samples
         :param H: Hurst exponent
-        :param lam: intermittency parameter, if lam=0 then becomes a fBm 
+        :param lam: intermittency parameter, if lam=0 then becomes a fBm
         :param B: batch size
         :param cache_path: _description_, defaults to None
         """
         super(SMRWGenerator, self).__init__(
-            'SMRW', B, cache_path, T=T, L=T, H=H, lam=lam, K0=K0,
-            alpha=alpha, beta=beta, gamma=gamma, **kwargs
+            "SMRW",
+            B,
+            cache_path,
+            T=T,
+            L=T,
+            H=H,
+            lam=lam,
+            K0=K0,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            **kwargs,
         )
 
     def generate_batch(self, i: int) -> np.ndarray:
@@ -437,22 +447,23 @@ class SMRWGenerator(DataGeneratorBase):
 
 
 class SPDaily(PriceData):
-    """ S&P500 daily prices based on data obtained from the Wall Street Journal
-    https://www.wsj.com/market-data/quotes/index/SPX/historical-prices """
+    """S&P500 daily prices based on data obtained from the Wall Street Journal
+    https://www.wsj.com/market-data/quotes/index/SPX/historical-prices"""
 
-    def __init__(self, start='03-01-2000', end='07-02-2024'):
-        
+    def __init__(
+        self, start: str = "03-01-2000", end: str = "07-02-2024", **kwargs
+    ) -> None:
+        """Initialize the dataset.
+
+        Args:
+            start (str, optional): start date. Defaults to '03-01-2000'.
+            end (str, optional): end date. Defaults to '07-02-2024'.
+
+        Raises:
+            ValueError: if selected dates are out of range for available data.
+        """
         # load full time-series
-        filename = Path(__file__).parent / 'snp_WSJ_08_02_2024.csv'
-        df = pd.read_csv(filename)
-
-        def formatter(dt_str):
-            m, d, y = [x for x in dt_str.split('/')]
-            m, d, y = int(m), int(d), int('20'+y)
-            return pd.Timestamp(year=y, month=m, day=d)
-
-        df.index = pd.DatetimeIndex(df['Date'].apply(formatter))
-        df = df.drop(columns=['Date']).sort_index()
+        df = snp_data
 
         max_date = df.index.max()
         min_date = df.index.min()
@@ -464,8 +475,8 @@ class SPDaily(PriceData):
         if start < min_date or end > max_date:
             raise ValueError("Dates are out of range for available date.")
 
-        df = df[(df.index>=start) & (df.index<=end)]
-        x = df[' Close'].values
+        df = df[(df.index >= start) & (df.index <= end)]
+        x = df["Close"].values
         dts = df.index
 
-        super(SPDaily, self).__init__(x=x[None, None, :], dts=dts)
+        super(SPDaily, self).__init__(x=x[None, None, :], dts=dts, **kwargs)
