@@ -3,13 +3,10 @@ import pkg_resources
 
 
 def load_data(filename: str, /) -> pd.DataFrame:
-    """Loads a dataset from the package data folder.
+    """ Loads a dataset from the package data folder.
 
-    Args:
-        filename (str): file name
-
-    Returns:
-        pd.DataFrame: dataset
+    :param x: file name
+    :return: dataset
     """
     filepath = pkg_resources.resource_filename(__name__, "" + filename)
     if filepath.endswith(".csv"):
