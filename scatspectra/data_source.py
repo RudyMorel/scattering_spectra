@@ -18,14 +18,13 @@ import pandas as pd
 
 from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
-
 from scatspectra.data import snp_data
 
 
 class TimeSeriesDataset:
-    """Time-series dataset stored in a directory. Each file in the directory
+    """ Time-series dataset stored in a directory. Each file in the directory
     should contain an array of same shape (B,N,T) with B the batch size, N the
-    number of time-series channels and T the number of samples."""
+    number of time-series channels and T the number of samples. """
 
     def __init__(
         self,
@@ -83,7 +82,7 @@ class TimeSeriesDataset:
         return np.load(next(dpath.iterdir())).shape
 
     def _init_slices(self) -> None:
-        """Default slices to apply to each batch."""
+        """ Default slices to apply to each batch. """
         self._slices = OrderedDict(
             {fp.name: slice(0, self.B) for fp in self.fpaths[:-1]}
         )
@@ -106,7 +105,7 @@ class TimeSeriesDataset:
         return self.x
 
     def split(self, num_splits: int) -> List["TimeSeriesDataset"]:
-        """Split this object into almost equal objects."""
+        """ Split this object into almost equal objects. """
         fpaths_splits = list_split(self.fpaths, num_splits)
         slices_splits = [
             OrderedDict({fp.name: self._slices[fp.name] for fp in fps})
@@ -159,7 +158,7 @@ class PriceData:
                 x = self.from_dln_to_x(dlnx)
             else:
                 raise ValueError(
-                    "One and only one argument x,dx,lnx,dlnx" + " should be provided."
+                    "One and only one argument x,dx,lnx,dlnx should be provided."
                 )
 
         if x_init is not None:
@@ -183,7 +182,7 @@ class PriceData:
 
     @staticmethod
     def rescale(x: np.ndarray, x_init: np.ndarray | None, additive: bool) -> np.ndarray:
-        """Impose the right starting point to each time-series in x."""
+        """ Impose the right starting point to each time-series in x. """
         if x_init is not None:
             if additive:
                 x = x - x[..., :1] + x_init[..., None]
@@ -233,7 +232,7 @@ class DataGeneratorBase:
             self.dpath.mkdir(parents=True, exist_ok=True)
 
     def dirname(self, **kwargs) -> str:
-        """Define directory name for this model with its params (kwargs)."""
+        """ Define directory name for this model with its params (kwargs). """
 
         def format_path(key, value):
             if isinstance(value, dict):
@@ -453,14 +452,10 @@ class SPDaily(PriceData):
     def __init__(
         self, start: str = "03-01-2000", end: str = "07-02-2024", **kwargs
     ) -> None:
-        """Initialize the dataset.
+        """ Initialize dataset.
 
-        Args:
-            start (str, optional): start date. Defaults to '03-01-2000'.
-            end (str, optional): end date. Defaults to '07-02-2024'.
-
-        Raises:
-            ValueError: if selected dates are out of range for available data.
+        :param start: start date. Defaults to '03-01-2000'.
+        :param end: end date. Defaults to '07-02-2024'.
         """
         # load full time-series
         df = snp_data
@@ -476,7 +471,7 @@ class SPDaily(PriceData):
             raise ValueError("Dates are out of range for available date.")
 
         df = df[(df.index >= start) & (df.index <= end)]
-        x = df[" Close"].values
+        x = df.Close.values
         dts = df.index
 
         super(SPDaily, self).__init__(x=x[None, None, :], dts=dts, **kwargs)
