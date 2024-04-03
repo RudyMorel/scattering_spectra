@@ -286,16 +286,21 @@ class DataGeneratorBase:
         """
         print(f"Model {self.model_name}: generating data ...")
         x_l = []
-        try:
-            mp.set_start_method("spawn")  # TODO: seems to slow down execution
-        except RuntimeError:
-            pass
-        with mp.Pool(processes=num_workers) as pool:
-            with tqdm(total=nbatches) as pbar:
-                for result in pool.imap_unordered(self.worker, list(range(nbatches))):
-                    _, x = result
-                    x_l.append(x)
-                    pbar.update()
+        if num_workers == 1:
+            for i in tqdm(range(nbatches)):
+                _, x = self.worker(i)
+                x_l.append(x)
+        else:
+            try:
+                mp.set_start_method("spawn")  # TODO: seems to slow down execution
+            except RuntimeError:
+                pass
+            with mp.Pool(processes=num_workers) as pool:
+                with tqdm(total=nbatches) as pbar:
+                    for result in pool.imap_unordered(self.worker, list(range(nbatches))):
+                        _, x = result
+                        x_l.append(x)
+                        pbar.update()
         print("Finished.")
 
         return x_l
