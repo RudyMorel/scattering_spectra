@@ -14,7 +14,9 @@ import torch.multiprocessing as mp
 from pathlib import Path
 import math
 import numpy as np
+import os
 import pandas as pd
+import logging
 
 from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
@@ -216,6 +218,7 @@ class DataGeneratorBase:
         :param cache_path: path to the cache directory if not set to "None"
         :param num_workers: number of workers for multi-processing
         """
+        logging.root.setLevel(os.getenv("LOGLEVEL","WARNING"))
         self.model_name = model_name
         self.B = B
 
@@ -284,10 +287,10 @@ class DataGeneratorBase:
         :param nbatches: number of data batches to generate
         :param num_workers: number of parallel workers
         """
-        print(f"Model {self.model_name}: generating data ...")
+        logging.info(f"Model {self.model_name}: generating data ...")
         x_l = []
         if num_workers == 1:
-            for i in tqdm(range(nbatches)):
+            for i in tqdm(range(nbatches), disable=logging.root.level != logging.INFO):
                 _, x = self.worker(i)
                 x_l.append(x)
         else:
@@ -301,7 +304,7 @@ class DataGeneratorBase:
                         _, x = result
                         x_l.append(x)
                         pbar.update()
-        print("Finished.")
+        logging.info("Finished.")
 
         return x_l
 
