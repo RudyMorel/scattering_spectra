@@ -278,16 +278,17 @@ class DataGeneratorBase:
         except Exception as e:
             raise e
 
-    def _generate(self, nbatches: int, num_workers: int):
+    def _generate(self, nbatches: int, num_workers: int, verbose: bool):
         """Generate data in parallel and save it if cache is used.
 
         :param nbatches: number of data batches to generate
         :param num_workers: number of parallel workers
         """
-        print(f"Model {self.model_name}: generating data ...")
+        if verbose:
+            print(f"Model {self.model_name}: generating data ...")
         x_l = []
         if num_workers == 1:
-            for i in tqdm(range(nbatches)):
+            for i in tqdm(range(nbatches), disable=not verbose):
                 _, x = self.worker(i)
                 x_l.append(x)
         else:
@@ -296,16 +297,17 @@ class DataGeneratorBase:
             except RuntimeError:
                 pass
             with mp.Pool(processes=num_workers) as pool:
-                with tqdm(total=nbatches) as pbar:
+                with tqdm(total=nbatches, disable=not verbose) as pbar:
                     for result in pool.imap_unordered(self.worker, list(range(nbatches))):
                         _, x = result
                         x_l.append(x)
                         pbar.update()
-        print("Finished.")
+        if verbose:
+            print("Finished.")
 
         return x_l
 
-    def load(self, R: int, num_workers: int = 1) -> np.ndarray:
+    def load(self, R: int, num_workers: int = 1, verbose: bool = True) -> np.ndarray:
         """Load data, generate it if cache is used.
 
         :param R: number of realizations (number of time-series)
@@ -313,10 +315,8 @@ class DataGeneratorBase:
         """
         # if there is a cache, use it
         if self.dpath is not None and self.dpath.is_dir():
-            print(
-                f"Model {self.model_name}: "
-                + f"using cache directory {self.dpath.name}."
-            )
+            if verbose:
+                print(f"Model {self.model_name}: using cache directory {self.dpath.name}.")
             # generate additional data if needed
             nbatches_avail = sum(1 for _ in self.dpath.iterdir())
             if nbatches_avail * self.B < R:
@@ -327,7 +327,7 @@ class DataGeneratorBase:
 
         # otherwise, generate data
         nbatches = math.ceil(R / self.B)
-        x_l = self._generate(nbatches, num_workers)
+        x_l = self._generate(nbatches, num_workers, verbose)
         x = np.concatenate(x_l, axis=0)[:R, :, :]
 
         return x

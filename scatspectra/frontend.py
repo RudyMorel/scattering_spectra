@@ -46,6 +46,7 @@ from scatspectra.description import make_description_compatible
 def load_data(
     name, R=None, T=None,
     cache_path=None, num_workers=1, 
+    verbose=True,
     **model_params
 ):
     """ Load log-prices from standard models e.g. fBm, Poisson, MRW, SMRW.
@@ -78,7 +79,7 @@ def load_data(
     data_gen = generator[name](
         cache_path=cache_path, T=T, **model_params
     )
-    x = data_gen.load(R, num_workers)
+    x = data_gen.load(R, num_workers, verbose)
 
     return x
 
