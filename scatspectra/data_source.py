@@ -321,7 +321,7 @@ class DataGeneratorBase:
             nbatches_avail = sum(1 for _ in self.dpath.iterdir())
             if nbatches_avail * self.B < R:
                 nbatches = math.ceil(R / self.B) - nbatches_avail
-                self._generate(nbatches, num_workers)
+                self._generate(nbatches, num_workers, verbose)
 
             return TimeSeriesDataset(self.dpath, R, True).load()
 
@@ -463,7 +463,7 @@ class SPDaily(PriceData):
         :param end: end date. Defaults to '07-02-2024'.
         """
         # load full time-series
-        df = snp_data
+        df = snp_data.sort_index()
 
         max_date = df.index.max()
         min_date = df.index.min()
