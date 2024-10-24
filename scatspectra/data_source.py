@@ -15,10 +15,10 @@ import math
 import numpy as np
 import pandas as pd
 
-from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
 from scatspectra.data import snp_data, snp_vix_data
 from scatspectra.layers.solver import MaxIteration
+from scatspectra.utils import list_split, cumsum_zero
 
 
 class TimeSeriesDataset:
@@ -120,13 +120,6 @@ class TimeSeriesDataset:
             TimeSeriesDataset(self.dpath, R, False, slices, batch_shape)
             for (R, slices) in zip(Rs, slices_splits)
         ]
-
-
-def cumsum_zero(dx: np.ndarray) -> np.ndarray:
-    """Cumsum of a vector preserving dimension through zero-pading."""
-    res = np.cumsum(dx, axis=-1)
-    res = np.concatenate([np.zeros_like(res[..., 0:1]), res], axis=-1)
-    return res
 
 
 class PriceData:
