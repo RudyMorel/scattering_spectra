@@ -5,6 +5,13 @@ import torch
 from scipy.signal import convolve as sci_convolve
 
 
+def cumsum_zero(dx: np.ndarray) -> np.ndarray:
+    """Cumsum of a vector preserving dimension through zero-pading."""
+    res = np.cumsum(dx, axis=-1)
+    res = np.concatenate([np.zeros_like(res[..., 0:1]), res], axis=-1)
+    return res
+
+
 def windows(
     x: np.ndarray, 
     w: int, 
