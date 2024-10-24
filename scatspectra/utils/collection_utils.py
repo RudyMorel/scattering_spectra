@@ -1,11 +1,11 @@
 """ Utils function for manipulating collections. """
-from typing import Sequence
+from typing import Any, Sequence
 from functools import reduce
 import numpy as np
 import pandas as pd
 
 
-def list_split(input_list, num_splits):
+def list_split(input_list: list[Any], num_splits: int) -> list[list[Any]]:
     """ Split a list into multiple sub-lists. """
 
     if num_splits > len(input_list):
@@ -58,9 +58,11 @@ def df_product(*dfs: pd.DataFrame) -> pd.DataFrame:
     return reduce(lambda l, r: pd.merge(l, r, on='key'), dfs).drop(columns='key')
 
 
-def df_product_channel_single(df: pd.DataFrame, 
-                              N: int, 
-                              method: str) -> pd.DataFrame:
+def df_product_channel_single(
+    df: pd.DataFrame, 
+    N: int, 
+    method: str
+) -> pd.DataFrame:
     """ Pandas cartesian product {(0,0), ..., (0, Nl-1))} x df """
     if method == "same":
         df_n = pd.DataFrame(np.stack([np.arange(N), np.arange(N)], 1), columns=['nl', 'nr'])
