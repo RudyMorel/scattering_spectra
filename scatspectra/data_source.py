@@ -18,7 +18,7 @@ import pandas as pd
 
 from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
-from scatspectra.data import snp_data
+from scatspectra.data import snp_data, snp_vix_data
 
 
 class TimeSeriesDataset:
@@ -479,4 +479,23 @@ class SPDaily(PriceData):
         x = df.Close.values
         dts = df.index
 
-        super(SPDaily, self).__init__(x=x[None, None, :], dts=dts, **kwargs)
+        super(SPDaily, self).__init__(x=x[None, None, :], dts=dts)
+
+
+class SPVIXDaily(PriceData):
+    """ S&P500 and VIX daily prices based on data obtained from yahoo!finance """
+
+    def __init__(
+        self, start: str | None = None, end: str | None = None
+    ) -> None:
+        """ Initialize dataset.
+
+        :param start: start date
+        :param end: end date
+        """
+        if start is not None or end is not None:
+            raise ValueError("Start and end dates are not yet supported for .")
+
+        dlnx = snp_vix_data.T[None,:,:]
+        
+        super().__init__(dlnx=dlnx, x_init=np.array([[1455.2199,24.2100]]))
