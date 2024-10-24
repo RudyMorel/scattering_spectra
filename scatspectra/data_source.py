@@ -4,13 +4,12 @@ Notations
 - N: number of data channels (N>1 : multivariate process)
 - T: number of data samples (i.e time samples)
 e.g. a time-series dataset batch would typically be a (B,N,T) array. """
-
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Iterable
 from collections import OrderedDict
 import shutil
 from pathlib import Path
 from tqdm import tqdm
-import torch.multiprocessing as mp
+import multiprocessing as mp
 from pathlib import Path
 import math
 import numpy as np
@@ -19,6 +18,7 @@ import pandas as pd
 from scatspectra.utils import list_split
 from scatspectra.standard_models import fbm, mrw, skewed_mrw, poisson_mu
 from scatspectra.data import snp_data, snp_vix_data
+from scatspectra.layers.solver import MaxIteration
 
 
 class TimeSeriesDataset:
@@ -28,11 +28,11 @@ class TimeSeriesDataset:
 
     def __init__(
         self,
-        dpath: Path,
-        R: int,
-        load: bool = False,
-        slices: Dict[str, slice] | None = None,
-        batch_shape=None,
+        dpath      : Path,
+        R          : int,
+        load       : bool = False,
+        slices     : Dict[str, slice] | None = None,
+        batch_shape: Tuple[int] | None = None,
     ):
         """
         :param dpath: path to the directory containing time-series
@@ -77,7 +77,7 @@ class TimeSeriesDataset:
             self.load()
 
     @staticmethod
-    def infer_shape(dpath) -> Tuple[int, int, int]:
+    def infer_shape(dpath: Path) -> Tuple[int, int, int]:
         """Infer the shape of a time-series batch in the directory."""
         return np.load(next(dpath.iterdir())).shape
 
@@ -122,7 +122,7 @@ class TimeSeriesDataset:
         ]
 
 
-def cumsum_zero(dx):
+def cumsum_zero(dx: np.ndarray) -> np.ndarray:
     """Cumsum of a vector preserving dimension through zero-pading."""
     res = np.cumsum(dx, axis=-1)
     res = np.concatenate([np.zeros_like(res[..., 0:1]), res], axis=-1)
@@ -134,12 +134,12 @@ class PriceData:
 
     def __init__(
         self,
-        x: np.ndarray | None = None,
-        dx: np.ndarray | None = None,
-        lnx: np.ndarray | None = None,
-        dlnx: np.ndarray | None = None,
+        x     : np.ndarray | None = None,
+        dx    : np.ndarray | None = None,
+        lnx   : np.ndarray | None = None,
+        dlnx  : np.ndarray | None = None,
         x_init: float | np.ndarray | None = None,
-        dts=None,
+        dts   : Iterable | None = None,
     ):
         """
         :param x: prices
@@ -171,7 +171,7 @@ class PriceData:
             and x_init.shape != x[..., 0].shape
         ):
             raise ValueError("Wrong x_init format in PriceData.")
-
+        
         self.dts = dts
 
         # set correct initial value through multiplication
@@ -191,15 +191,15 @@ class PriceData:
         return x
 
     @staticmethod
-    def from_dx_to_x(dx: np.ndarray):
+    def from_dx_to_x(dx: np.ndarray) -> np.ndarray:
         return cumsum_zero(dx)
 
     @staticmethod
-    def from_ln_to_x(lnx: np.ndarray):
+    def from_ln_to_x(lnx: np.ndarray) -> np.ndarray:
         return np.exp(lnx)
 
     @staticmethod
-    def from_dln_to_x(dlnx: np.ndarray):
+    def from_dln_to_x(dlnx: np.ndarray) -> np.ndarray:
         lnx = cumsum_zero(dlnx)
         return PriceData.from_ln_to_x(lnx)
 
@@ -208,7 +208,11 @@ class DataGeneratorBase:
     """Base multi-processing dataset generator."""
 
     def __init__(
-        self, model_name: str, B: int, cache_path: Path | None = None, **kwargs
+        self,
+        model_name: str,
+        B         : int,
+        cache_path: Path | None = None,
+        **kwargs
     ):
         """
         :param model_name: name of the generative model
@@ -251,8 +255,6 @@ class DataGeneratorBase:
                 return f"_{key[:2]}{value:.1e}"
             elif isinstance(value, bool):
                 return f"_{key[:2]}{int(value)}"
-            elif key == "coeff_types":  # TODO: make this more general
-                return "".join(sorted("".join([v[:2] for v in value])))
             else:
                 return ""
 
@@ -275,6 +277,10 @@ class DataGeneratorBase:
                 raise OSError(f"File {fname} already exists.")
             np.save(str(self.dpath / fname), x)
             return (i, None)
+        except MaxIteration:
+            return (i, None)
+        except OSError:
+            return (i, None)
         except Exception as e:
             raise e
 
@@ -284,26 +290,20 @@ class DataGeneratorBase:
         :param nbatches: number of data batches to generate
         :param num_workers: number of parallel workers
         """
-        if verbose:
-            print(f"Model {self.model_name}: generating data ...")
+        if verbose: print(f"Model {self.model_name}: generating data ...")
         x_l = []
         if num_workers == 1:
             for i in tqdm(range(nbatches), disable=not verbose):
                 _, x = self.worker(i)
                 x_l.append(x)
         else:
-            try:
-                mp.set_start_method("spawn")  # TODO: seems to slow down execution
-            except RuntimeError:
-                pass
             with mp.Pool(processes=num_workers) as pool:
                 with tqdm(total=nbatches, disable=not verbose) as pbar:
                     for result in pool.imap_unordered(self.worker, list(range(nbatches))):
                         _, x = result
                         x_l.append(x)
                         pbar.update()
-        if verbose:
-            print("Finished.")
+        if verbose: print("Finished.")
 
         return x_l
 
@@ -315,8 +315,7 @@ class DataGeneratorBase:
         """
         # if there is a cache, use it
         if self.dpath is not None and self.dpath.is_dir():
-            if verbose:
-                print(f"Model {self.model_name}: using cache directory {self.dpath.name}.")
+            if verbose: print(f"Model {self.model_name}: using cache directory {self.dpath.name}.")
             # generate additional data if needed
             nbatches_avail = sum(1 for _ in self.dpath.iterdir())
             if nbatches_avail * self.B < R:
@@ -409,7 +408,7 @@ class MRWGenerator(DataGeneratorBase):
 
 
 class SMRWGenerator(DataGeneratorBase):
-    """Skewed Multifractal Random Walk."""
+    """ Skewed Multifractal Random Walk. """
 
     def __init__(
         self,
@@ -451,24 +450,23 @@ class SMRWGenerator(DataGeneratorBase):
 
 
 class SPDaily(PriceData):
-    """S&P500 daily prices based on data obtained from the Wall Street Journal
-    https://www.wsj.com/market-data/quotes/index/SPX/historical-prices"""
+    """ S&P500 daily prices based on data obtained from the Wall Street Journal
+    https://www.wsj.com/market-data/quotes/index/SPX/historical-prices """
 
     def __init__(
-        self, start: str = "03-01-2000", end: str = "07-02-2024", **kwargs
+        self, start: str = "03-01-2000", end: str = "07-02-2024"
     ) -> None:
         """ Initialize dataset.
 
-        :param start: start date. Defaults to '03-01-2000'.
-        :param end: end date. Defaults to '07-02-2024'.
+        :param start: start date. Defaults to '03-01-2000'
+        :param end: end date. Defaults to '07-02-2024'
         """
-        # load full time-series
+        # select dates
         df = snp_data.sort_index()
 
-        max_date = df.index.max()
         min_date = df.index.min()
+        max_date = df.index.max()
 
-        # select dates
         start = pd.to_datetime(start, dayfirst=True)
         end = pd.to_datetime(end, dayfirst=True)
 
