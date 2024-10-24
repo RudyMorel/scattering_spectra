@@ -17,8 +17,11 @@ class NormalizationLayer(nn.Module):
         self.register_buffer("sigma", sigma)
         self.on_the_fly = on_the_fly
 
-    def forward(self, x: torch.Tensor, 
-                bs: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        bs: torch.Tensor | None = None
+    ) -> torch.Tensor:
         if self.sigma is None:
             return x
         if self.on_the_fly:  # normalize on the fly

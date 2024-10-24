@@ -8,14 +8,10 @@ from scatspectra.description import DescribedTensor
 
 class MSELossScat(nn.Module):
     """ Implements l2 norm on the scattering coefficients or scattering covariances. """
-    def __init__(self,
-                 J: int,
-                 histogram_moments: bool = False,
-                 wrap_avg: bool = True):
+    def __init__(self, J: int, wrap_avg: bool = True):
         super(MSELossScat, self).__init__()
         self.max_gap, self.mean_gap_pct, self.max_gap_pct = {}, {}, {}  # tracking
 
-        self.histogram_moments = histogram_moments
         self.lam_cutoff = 1e-5
 
         self.J = J
@@ -23,9 +19,10 @@ class MSELossScat(nn.Module):
         self.wrap_avg = wrap_avg
 
     def compute_gap(self,
-                    input: DescribedTensor | None,
-                    target: DescribedTensor, 
-                    weights: torch.Tensor | None):
+        input: DescribedTensor | None,
+        target: DescribedTensor, 
+        weights: torch.Tensor | None
+    ) -> torch.Tensor:
         # get weighted gaps
         if input is None:
             gap = torch.zeros_like(target.y) - target.y
@@ -43,7 +40,7 @@ class MSELossScat(nn.Module):
             mask_cov = df.eval("q==2")
 
             df_cov = df.query("q==2")
-            gap_cov = gap[:, mask_cov]
+            gap_cov = gap[:, mask_cov.values]
             jl1 = torch.tensor(
                 df_cov.jl1.astype(int).values, dtype=torch.int64
             )
@@ -64,10 +61,7 @@ class MSELossScat(nn.Module):
 
         # compute avg, min, max gaps for display purposes
         for coeff_type in gap_df['coeff_type'].unique():
-            # discard very small coefficients
             mask_ctype = gap_df.eval(f"coeff_type=='{coeff_type}'")
-            # mask_small = (torch.abs(target.y[:, :, 0].mean(0)) < 0.01).cpu().numpy()
-            # mask = mask_ctype & ~mask_small
             mask = mask_ctype
 
             if mask.sum() == 0 or True:
@@ -86,49 +80,17 @@ class MSELossScat(nn.Module):
         return gap
 
     def forward(self, 
-                input: torch.Tensor, 
-                target: torch.Tensor, 
-                weights_gap: torch.Tensor | None = None, 
-                weights_l2: torch.Tensor | None = None):
+        input: DescribedTensor, 
+        target: DescribedTensor, 
+        weights_gap: torch.Tensor | None = None, 
+        weights_l2: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """ Computes l2 norm. """
         gap = self.compute_gap(input, target, weights_gap)
         if weights_l2 is None:
             loss = torch.abs(gap).pow(2.0).mean()
         else:
             loss = (weights_l2 * torch.abs(gap).pow(2.0)).sum()
-
-        # temporary hack for adding certain histogram constraints
-        if self.histogram_moments:
-            if torch.abs(target.x[0,0,0,0,-1] - target.x[0,0,0,0,-1]) > 10.0:
-                raise ValueError("Are you sure you are generating increments?")
-
-            filters = torch.tensor([[1] * (2 ** j) + [0] * (target.x.shape[-1] - 2 ** j) for j in range(self.J)],
-                                   dtype=target.y.dtype, device=target.y.device)
-            def multiscale_dx(x):
-                # return torch.fft.ifft(torch.fft.fft(filters[:,None,:]) * torch.fft.fft(torch.diff(x, dim=-1))).real
-                return torch.fft.ifft(torch.fft.fft(filters[:,None,:]) * torch.fft.fft(x)).real
-
-            dxw_target = multiscale_dx(target.x)
-            target_norm = dxw_target.pow(2.0).mean(-1, keepdims=True).pow(0.5)
-            def energy(x):
-                return x.pow(2.0).mean((0,1,3,4)) / target_norm.pow(2.0).mean((0,1,3,4))
-            def skewness(x):
-                # x_norm = x / target_norm
-                # x2_signed = nn.ReLU()(x_norm).pow(2.0) - nn.ReLU()(-x_norm).pow(2.0)
-                return torch.sigmoid(x / target_norm).mean((0,1,3,4))
-            def kurtosis(x):
-                return torch.abs(x).mean((0,1,3,4)).pow(2.0) / target_norm.pow(2.0).mean((0,1,3,4))
-            histogram_statistics = [skewness]
-
-            target_stats = torch.stack([stat(dxw_target) for stat in histogram_statistics])
-            if input.x is None:
-                input_stats = torch.zeros_like(target_stats)
-            else:
-                dxw_input = multiscale_dx(input.x)
-                input_stats = torch.stack([stat(dxw_input) for stat in histogram_statistics])
-            loss_histogram = (input_stats - target_stats).pow(2.0).mean()
-
-            loss = loss + 0.5 * loss_histogram
 
         return loss
 

@@ -46,9 +46,6 @@ class Solver(nn.Module):
 
         self.result = np.inf, np.inf
 
-        # for debug only
-        self.grad_stored = []
-
         self.Rx_target = Rx_target
         if cuda:
             self.cuda()
@@ -81,10 +78,10 @@ class Solver(nn.Module):
             x_torch.grad.data.zero_()
 
         # compute moments
-        Rxt = self.model(x_torch).mean_batch()
+        Rx = self.model(x_torch).mean_batch()
 
         # compute loss function
-        loss = self.loss(Rxt, self.Rx_target, None, None) / self.loss_norm
+        loss = self.loss(Rx, self.Rx_target, None, None) / self.loss_norm
 
         # compute gradient
         grad_x, = grad([loss], [x_torch], retain_graph=True)

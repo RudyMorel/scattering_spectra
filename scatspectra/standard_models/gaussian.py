@@ -1,7 +1,6 @@
 """ Gaussian models. """
 import warnings
 import numpy as np
-from numpy.random import normal as nd
 
 
 def gaussian_cme(cov, R, T):
@@ -10,7 +9,7 @@ def gaussian_cme(cov, R, T):
     (see C. R. Dietrich AND G. N. Newsam).
 
     :param cov: T array, function r such that Cov[Y(x)Y(y)] = r(|x-y|)
-    :param: S: int, number of synthesis
+    :param: R: int, number of synthesis
     :param T: int, number of samples
     """
 

@@ -20,10 +20,11 @@ from scatspectra.utils import format_args_to_list
 
 class ScatteringShape:
     def __init__(self,
-                 N: int,
-                 n_scales: int,
-                 A: int,
-                 T: int) -> None:
+        N: int,
+        n_scales: int,
+        A: int,
+        T: int
+    ) -> None:
         self.N = N
         self.n_scales = n_scales
         self.A = A
@@ -34,10 +35,11 @@ class ScaleIndexer:
     """ Implements the scale paths used in the scattering transform. """
 
     def __init__(self,
-                 r: int,
-                 J: int | List[int],
-                 Q: int | List[int],
-                 strictly_increasing: bool = True) -> None:
+        r: int,
+        J: int | List[int],
+        Q: int | List[int],
+        strictly_increasing: bool = True
+    ) -> None:
         self.r = r
         self.J, self.Q = format_args_to_list(J, Q, n=r)
         self.strictly_increasing = strictly_increasing

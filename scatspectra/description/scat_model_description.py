@@ -9,9 +9,11 @@ from scatspectra.utils import (
 from scatspectra.description import ScaleIndexer
 
 
-def scattering_network_description(r: int,
-                                   N_out: int,
-                                   scale_indexer: ScaleIndexer) -> pd.DataFrame:
+def scattering_network_description(
+    r: int,
+    N_out: int,
+    scale_indexer: ScaleIndexer
+) -> pd.DataFrame:
     """ Assemble description of output of Sx = (Wx, W|Wx|, ..., W|...|Wx||). """
 
     r_max = scale_indexer.r
@@ -44,9 +46,11 @@ def scattering_network_description(r: int,
     return df.reindex(columns=output_columns)
 
 
-def scattering_coefficients_description(Ns: List[int],
-                                        sc_idxer: ScaleIndexer,
-                                        qs: np.ndarray) -> pd.DataFrame:
+def scattering_coefficients_description(
+    Ns: List[int],
+    sc_idxer: ScaleIndexer,
+    qs: np.ndarray
+) -> pd.DataFrame:
 
     r_max = sc_idxer.r
 
@@ -62,7 +66,7 @@ def scattering_coefficients_description(Ns: List[int],
     return df
 
 
-def make_description_compatible(df):
+def make_description_compatible(df: pd.DataFrame) -> pd.DataFrame:
     """ Convert marginal description to correlation description. """
     df = df.rename(columns={'r': 'rl', 'n': 'nl',
                             'sc': 'scl', 'j1': 'jl1', 'a': 'al'})
@@ -88,9 +92,11 @@ def build_description_mean_spars(N: int, sc_idxer: ScaleIndexer) -> pd.DataFrame
     return df
 
 
-def create_scale_description(scls: np.ndarray,
-                             scrs: np.ndarray,
-                             sc_idxer: ScaleIndexer) -> pd.DataFrame:
+def create_scale_description(
+    scls: np.ndarray,
+    scrs: np.ndarray,
+    sc_idxer: ScaleIndexer
+) -> pd.DataFrame:
     """ Return the dataframe that describes the scale association in the output of forward. """
     info_l = []
     for (scl, scr) in product(scls, scrs):
@@ -144,7 +150,7 @@ def create_scale_description(scls: np.ndarray,
     return df_scale
 
 
-def build_description_correlation(Ns, sc_idxer, diago_n):
+def build_description_correlation(Ns: list[int], sc_idxer: ScaleIndexer, diago_n: bool) -> pd.DataFrame:
     """ Assemble the description the phase modulus correlation E{Sx, Sx}. """
     scs_r1, scs_r2 = sc_idxer.sc_idces[:2]
 
