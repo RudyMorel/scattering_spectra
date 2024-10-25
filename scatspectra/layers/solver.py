@@ -10,7 +10,7 @@ from torch.autograd import Variable, grad
 from scatspectra.description import DescribedTensor
 
 
-def format_np(x):
+def format_np(x: np.ndarray) -> np.ndarray:
     """ Unsqueeze x to become of shape (B, N, T). """
     if x is None:
         return x
@@ -112,7 +112,7 @@ class CheckConvCriterion:
         solver: Solver,
         tol: float,
         max_wait: int = 1000,
-        save_data_evolution_p: bool = False,
+        save_interval_data: int | None = None,
         verbose: bool = True
     ):
         self.solver = solver
@@ -127,7 +127,7 @@ class CheckConvCriterion:
 
         self.verbose = verbose
         self.max_wait, self.wait = max_wait, 0
-        self.save_data_evolution_p = save_data_evolution_p
+        self.save_interval_data = save_interval_data
 
         self.logs_loss = []
         self.logs_grad = []
@@ -149,10 +149,8 @@ class CheckConvCriterion:
             self.next_milestone = 10 ** (np.floor(np.log10(gerr)))
 
         info_already_printed_p = False
-        if self.save_data_evolution_p and not np.log2(self.counter) % 1:
+        if self.save_interval_data is not None and self.counter % self.save_interval_data == 0:
             self.logs_x.append(xk)
-            self.print_info_line()
-            info_already_printed_p = True
 
         if np.sqrt(err) <= self.tol:
             self.result = xk

@@ -1,4 +1,3 @@
-from typing import List
 from itertools import product
 import numpy as np
 import pandas as pd
@@ -47,7 +46,7 @@ def scattering_network_description(
 
 
 def scattering_coefficients_description(
-    Ns: List[int],
+    N: int,
     sc_idxer: ScaleIndexer,
     qs: np.ndarray
 ) -> pd.DataFrame:
@@ -55,7 +54,7 @@ def scattering_coefficients_description(
     r_max = sc_idxer.r
 
     df = pd.concat([
-        scattering_network_description(r, Ns[r-1], sc_idxer)
+        scattering_network_description(r, N, sc_idxer)
         for r in range(1, r_max+1)
     ])
     df['coeff_type'] = "scat_marginal"
@@ -150,7 +149,7 @@ def create_scale_description(
     return df_scale
 
 
-def build_description_correlation(Ns: list[int], sc_idxer: ScaleIndexer, diago_n: bool) -> pd.DataFrame:
+def build_description_correlation(N: int, sc_idxer: ScaleIndexer, multivariate: bool) -> pd.DataFrame:
     """ Assemble the description the phase modulus correlation E{Sx, Sx}. """
     scs_r1, scs_r2 = sc_idxer.sc_idces[:2]
 
@@ -159,14 +158,14 @@ def build_description_correlation(Ns: list[int], sc_idxer: ScaleIndexer, diago_n
     df_mw = create_scale_description(scs_r2, scs_r2, sc_idxer)
 
     def channel_expand(df, N1, N2):
-        if diago_n:
-            return df_product_channel_single(df, N1, "same")
-        return df_product_channel_double(df, N1, N2)
+        if multivariate:
+            return df_product_channel_double(df, N1, N2)
+        return df_product_channel_single(df, N1, "same")
 
     df_cov = pd.concat([
-        channel_expand(df_ww, Ns[0], Ns[0]),
-        channel_expand(df_wmw, Ns[0], Ns[1]),
-        channel_expand(df_mw, Ns[0], Ns[1])
+        channel_expand(df_ww, N, N),
+        channel_expand(df_wmw, N, N),
+        channel_expand(df_mw, N, N)
     ])
 
     return df_cov
@@ -195,3 +194,27 @@ def create_scale_invariant_description(sc_idxer: ScaleIndexer) -> pd.DataFrame:
     )
 
     return df
+
+
+def build_description_histograms(sc_idxer: ScaleIndexer) -> pd.DataFrame:
+    """ Assemble the description of the histograms of scattering coefficients. """
+    data = []
+    # skewness moments P(\delta_j x (t) > 0)
+    for j in range(0, sc_idxer.JQ(1)):
+        data.append((
+            'hist_shewness', 0, pd.NA, 0, 0, pd.NA, j, pd.NA, j, pd.NA, pd.NA, 0, pd.NA, True, j==sc_idxer.JQ(1)
+        ))
+    # low-moment kurtosis E{|\delta_j x|}
+    for j in range(0, sc_idxer.JQ(1)):
+        data.append((
+            'hist_kurtosis', 0, pd.NA, 1, 0, pd.NA, j, pd.NA, j, pd.NA, pd.NA, 0, pd.NA, True, j==sc_idxer.JQ(1)
+        ))
+    # log-envelope energy, E{ |log|Wx||^2 }
+    for j in range(0, sc_idxer.JQ(1)+1):
+        data.append((
+            'hist_variance_log', 0, pd.NA, 2, 0, pd.NA, j, pd.NA, j, pd.NA, pd.NA, 0, pd.NA, True, j==sc_idxer.JQ(1)
+        ))
+    return pd.DataFrame(
+        data,
+        columns=['coeff_type', 'nl', 'nr', 'q', 'rl', 'rr', 'scl', 'scr', 'jl1', 'jr1', 'j2', 'al', 'ar', 'is_real', 'is_low']
+    )

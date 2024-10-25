@@ -1,4 +1,3 @@
-from typing import List, Dict
 from abc import abstractmethod
 import torch
 import torch.nn as nn
@@ -9,7 +8,7 @@ from scatspectra.description import (
     ScaleIndexer, DescribedTensor, scattering_network_description,
     scattering_coefficients_description, build_description_mean_spars,
     build_description_correlation, make_description_compatible,
-    create_scale_invariant_description
+    create_scale_invariant_description, build_description_histograms
 )
 from scatspectra.layers import (
     Wavelet, Modulus, PhaseOperator, LinearLayer, NormalizationLayer,
@@ -65,37 +64,75 @@ class Model(ChunkedModule):
 
     def __init__(
         self,
-        model_type: str | None,
-        T: int,
-        r: int,
-        J: int | List[int],
-        Q: int | List[int],
-        wav_type: str | List[str],
-        wav_norm: str | List[str],
-        high_freq: float | List[float],
-        A: int | None,
-        rpad: bool,
-        channel_transforms: List[torch.Tensor] | None,
-        N: int,
-        Ns: List[int] | None,
-        diago_n: bool,
-        cross_params: Dict | None,
-        sigma2: torch.Tensor | None,
-        norm_on_the_fly: bool,
-        estim_operator: Estimator | None,
-        qs: List[float] | None,
-        coeff_types: List[str] | None,
-        dtype: torch.dtype | None,
-        histogram_moments: bool,
-        skew_redundance: bool,
-        nchunks: int,
-        **kwargs
+        # generic model arguments
+        model_type        : str | None,
+        coeff_types       : list[str] | None,
+        # time filtering arguments
+        T                 : int,
+        r                 : int,
+        J                 : int | list[int],
+        Q                 : int | list[int],
+        wav_type          : str | list[str],
+        wav_norm          : str | list[str],
+        high_freq         : float | list[float],
+        A                 : int | None,
+        rpad              : bool,
+        # multivariate arguments
+        N                 : int,
+        multivariate_model: bool,
+        # statistics arguments
+        estim_operator    : Estimator | None,
+        qs                : list[float] | None,
+        dtype             : torch.dtype | None,
+        skew_redundance   : bool,
+        histogram_moments : bool,
+        # normalization arguments
+        sigma2            : torch.Tensor | None,
+        norm_on_the_fly   : bool,
+        histogram_norm    : tuple[torch.Tensor] | None,
+        # other arguments 
+        nchunks           : int,
+        gen_log_returns   : bool,
     ):
+        """ 
+        :param model_type: moments to compute on scattering
+            None: compute Sx = (Wx, W|Wx|) and keep time axis t
+            "scat_marginal": compute marginal statistics on Sx: <|Sx|^q>_t
+            "scat_spectra": compute scattering spectra which corresponds to 
+                <Sx>_t and <Sx Sx^T>_t
+            "inv_scat_spectra": invariant scattering spectra, same as "scat_spectra" but now 
+                consider the self-similar projection of matrix <Sx Sx^T>_t
+            "scat_marginal+scat_spectra": both "scat_marginal" and "scat_spectra"
+        :param coeff_types: coefficients to retain in the output
+        :param T: length of the time-series
+        :param r: number of convolutional layers in a scattering model
+        :param J: number of scales (octaves) for each wavelet layer
+        :param Q: number of wavelets per octave for each wavelet layer
+        :param wav_type: wavelet type for each layer, e.g. 'battle_lemarie'
+        :param wav_norm: wavelet normalization for each layer, e.g. 'l1'
+        :param high_freq: central frequency of mother wavelet for each layer, 0.5 may lead to important aliasing
+        :param A: number of angles for the phase transform, deprecated
+        :param rpad: use a reflection pad to account for edge effects
+        :param N: number of input channels (N>1: multivariate)
+        :param multivariate_model: whether to consider correlations across input channels (i.e. across time-series)
+        :param estim_operator: estimator to use for computing statistics, e.g. uniform time average
+        :param qs: exponent to use in a "scat_marginal" or "scat+scat_spectra" model
+        :param dtype: precision of the model
+        :param skew_redundance: whether to choose jl1=jr1 for skewness coefficients
+        :param histogram_moments: use histogram moments
+        :param sigma2: normalization factor for the scattering coefficients
+        :param norm_on_the_fly: normalize scattering coefficients on the fly
+        :param histogram_norm: normalization factors for histogram moments
+        :param nchunks: number of data chunks to process, increase it to reduce memory usage
+        :param gen_log_returns: for histogram moments, need to know if the 
+            model is applied on log-returns or log-prices
+        """
         super(Model, self).__init__(nchunks)
 
         self.config = locals().copy()
 
         self.model_type = model_type
+        self.gen_dlnx = gen_log_returns
 
         J, Q, wav_type, wav_norm, high_freq = \
             format_args_to_list(J, Q, wav_type, wav_norm, high_freq, n=r)
@@ -119,21 +156,14 @@ class Model(ChunkedModule):
         # normalization layer
         sigma = None if sigma2 is None else sigma2.pow(0.5)
         self.norm_layer = NormalizationLayer(2, sigma, norm_on_the_fly)
+        self.hist_norm = histogram_norm
+        if histogram_norm is not None:
+            self.register_buffer('sigma_dlnx', histogram_norm[0].pow(0.5))
+            self.register_buffer('sigma_lnmW', histogram_norm[1].pow(0.5))
 
-        # channel transforms
-        if channel_transforms is None:
-            self.L1 = nn.Identity()
-            self.L2 = nn.Identity()
-            self.Lphix = nn.Identity()
-        else:
-            B1, B2, B3 = channel_transforms
-            self.L1 = LinearLayer(B1)
-            self.L2 = LinearLayer(B2)
-            self.Lphix = LinearLayer(B3)
+        # multivariate
         self.N = N
-        self.Ns = Ns or [N] * r
-        self.diago_n = diago_n
-        self.cross_params = cross_params
+        self.multivariate_model = multivariate_model
 
         # marginal moments i.e. computed on univariate scale channels
         self.histogram_moments = histogram_moments
@@ -162,7 +192,7 @@ class Model(ChunkedModule):
                 ave=estim_operator
             )
             self.df_corr = build_description_correlation(
-                [1, 1], self.sc_idxer, diago_n=True
+                1, self.sc_idxer, multivariate=False
             )
             self.module_corrinv = None
             if model_type == 'inv_scat_spectra':
@@ -175,10 +205,9 @@ class Model(ChunkedModule):
         self.df = self.build_description()
 
         self.all_coeff_types = None 
-        self.coeff_types = None
+        self.coeff_types = coeff_types
         if 'coeff_type' in self.df.columns:
             self.all_coeff_types = self.df.coeff_type.unique().tolist()
-            self.coeff_types = coeff_types or self.df.coeff_type.unique().tolist()
 
         # cast model to the right precision
         if dtype == torch.float32:
@@ -188,7 +217,7 @@ class Model(ChunkedModule):
         else:
             raise ValueError(f"Dtype {dtype} not supported for Scattering model.")
 
-    def double(self):
+    def double(self) -> 'Model':
         """ Change model parameters and buffers to double precision (float64 and complex128). """
         def cast(t):
             if t.is_floating_point():
@@ -199,8 +228,8 @@ class Model(ChunkedModule):
         return self._apply(cast)
 
     def compute_scattering_coefficients(
-        self, x: torch.Tensor, bs: torch.Tensor | None= None
-    ) -> List[torch.Tensor]:
+        self, x: torch.Tensor, bs: torch.Tensor | None = None
+    ) -> list[torch.Tensor]:
         """ Compute the Wx, W|Wx|, ..., W|...|Wx|| 
         i.e. standard scattering coefficients. """
         Sx_l = []
@@ -213,19 +242,24 @@ class Model(ChunkedModule):
 
         return Sx_l
 
-    def compute_mean_and_spars(self, Wx, reshape=True):
+    def compute_mean_and_spars(self, Wx: torch.Tensor, reshape: bool = True) -> torch.Tensor:
         """ Compute E{|Wx|}. """
         exp = self.module_mean_spars(Wx)
         if reshape:
             return exp.view(exp.shape[0], -1, exp.shape[-1])
         return exp
 
-    def compute_phase_mod_correlation(self, Wx, WmWx, diago_n, reshape=True):
+    def compute_phase_mod_correlation(self, 
+        Wx: torch.Tensor, 
+        WmWx: torch.Tensor, 
+        multivariate: bool, 
+        reshape: bool = True
+    ) -> torch.Tensor:
         """ Compute reduced phase-modulus correlation matrices
         E{Wx Wx^T}, E{Wx W|Wx|^T}, E{W|Wx| W|Wx|^T}"""
-        corr1 = self.module_corr_w(Wx, Wx, diago_n=diago_n)
-        corr2 = self.module_corr_wmw(Wx, WmWx, diago_n=diago_n)
-        corr3 = self.module_corr_mw(WmWx, WmWx, diago_n=diago_n)
+        corr1 = self.module_corr_w(Wx, Wx, multivariate=multivariate)
+        corr2 = self.module_corr_wmw(Wx, WmWx, multivariate=multivariate)
+        corr3 = self.module_corr_mw(WmWx, WmWx, multivariate=multivariate)
 
         def reshaper(y):
             if reshape:
@@ -250,22 +284,20 @@ class Model(ChunkedModule):
         if self.model_type is None:
 
             df = pd.concat([
-                scattering_network_description(o+1, self.Ns[o], self.sc_idxer)
+                scattering_network_description(o+1, self.N, self.sc_idxer)
                 for o in range(self.r)
             ], axis=0)
 
         elif self.model_type == 'scat_marginal':
 
             qs = self.module_scat.qs.cpu().numpy()
-            df = scattering_coefficients_description(self.Ns,
-                                                     self.sc_idxer,
-                                                     qs)
+            df = scattering_coefficients_description(self.N, self.sc_idxer, qs)
 
         elif self.model_type == 'scat_spectra':
 
             df_r1 = build_description_mean_spars(self.N, self.sc_idxer)
             df_r2 = build_description_correlation(
-                self.Ns, self.sc_idxer, diago_n=self.diago_n
+                self.N, self.sc_idxer, multivariate=self.multivariate_model
             )
 
             df = pd.concat([df_r1, df_r2])
@@ -278,9 +310,7 @@ class Model(ChunkedModule):
         elif self.model_type == 'inv_scat_spectra':
 
             df_r1 = build_description_mean_spars(self.N, self.sc_idxer)
-            df_r2 = build_description_correlation(
-                [self.N, self.N], self.sc_idxer, diago_n=self.diago_n
-            )
+            df_r2 = build_description_correlation(self.N, self.sc_idxer, multivariate=self.multivariate_model)
 
             # description of the scale NON-invariant part
             # 'mean', 'spars, ''variance' coefficients and all low-pass coefficients
@@ -303,7 +333,7 @@ class Model(ChunkedModule):
             df_exp = build_description_mean_spars(self.N, self.sc_idxer)
 
             df_scat = scattering_network_description(
-                r=2, N_out=self.Ns[1], scale_indexer=self.sc_idxer
+                r=2, N_out=self.N, scale_indexer=self.sc_idxer
             )
 
             df_scat = make_description_compatible(df_scat)
@@ -311,7 +341,7 @@ class Model(ChunkedModule):
             df_scat['coeff_type'] = "scat_marginal"
 
             df_corr = build_description_correlation(
-                self.Ns, self.sc_idxer, diago_n=self.diago_n
+                self.N, self.sc_idxer, multivariate=self.multivariate_model
             )
 
             df = pd.concat([df_exp, df_scat, df_corr])
@@ -324,6 +354,12 @@ class Model(ChunkedModule):
         else:
 
             raise ValueError(f"Unrecognized model type {self.model_type}.")
+        
+        if self.histogram_moments:
+
+            df_hist = build_description_histograms(self.sc_idxer)
+
+            df = pd.concat([df, df_hist])
 
         return df
 
@@ -369,7 +405,7 @@ class Model(ChunkedModule):
 
             # <Sx(t, j1 ... jr) Sx(t, j'1 ... j'r')^T>_t
             corr = self.compute_phase_mod_correlation(
-                *Sx, diago_n=self.diago_n
+                *Sx, multivariate=self.multivariate_model
             )
 
             y = torch.cat([exp, corr], dim=1)
@@ -384,9 +420,9 @@ class Model(ChunkedModule):
             noninv_mask = self.df_corr.eval(
                 "coeff_type == 'variance' | is_low == True"
             ).values
-            corr_full = self.compute_phase_mod_correlation(*Sx,
-                                                           diago_n=self.diago_n,
-                                                           reshape=False)
+            corr_full = self.compute_phase_mod_correlation(
+                *Sx, multivariate=self.multivariate_model, reshape=False
+            )
             corr_noninv = corr_full[..., noninv_mask, :]
             corr_inv = self.module_corrinv(corr_full)  # invariant to dilation
 
@@ -407,7 +443,7 @@ class Model(ChunkedModule):
             ], dim=1)
 
             corr = self.compute_phase_mod_correlation(
-                Wx, WmWx, diago_n=self.diago_n
+                Wx, WmWx, multivariate=self.multivariate_model
             )
 
             y = torch.cat([exp, corr], 1)
@@ -421,30 +457,33 @@ class Model(ChunkedModule):
 
         if self.histogram_moments:
             # get multi-scale increments (can be seen as a particular wavelet transform)
-            filters = torch.tensor([[1] * (2 ** j) + [0] * (x.shape[-1] - 2 ** j) for j in range(self.sc_idxer.J[0])],
-                                   dtype=x.dtype, device=x.device)
+            filters = torch.tensor(
+                [[1] * (2 ** j) + [0] * (x.shape[-1]-1+self.gen_dlnx-2**j) for j in range(self.sc_idxer.J[0])], 
+                dtype=x.dtype, device=x.device
+            )
 
             def multiscale_dx(x):
                 return torch.fft.ifft(torch.fft.fft(filters[:, None, :]) * torch.fft.fft(x)).real
 
-            dx = multiscale_dx(x)
-            dx_norm = dx.pow(2.0).mean(-1, keepdim=True).pow(0.5)
-            # def energy(x):
-            #     return x.pow(2.0).mean((0,1,3,4)) / target_norm.pow(2.0).mean((0,1,3,4))
+            if self.gen_dlnx:
+                dx = multiscale_dx(x)
+            else:
+                dx = multiscale_dx(x.diff(dim=-1))
+            dx_target_norm = self.sigma_dlnx.permute(1, 0, 2)  # N J T
 
-            def skewness(dx):
-                # x_norm = x / target_norm
-                # x2_signed = nn.ReLU()(x_norm).pow(2.0) - nn.ReLU()(-x_norm).pow(2.0)
-                return torch.sigmoid(dx / dx_norm).mean(-1, keepdim=True)
-            # def kurtosis(x):
-            #     return torch.abs(x).mean((0,1,3,4)).pow(2.0) / target_norm.pow(2.0).mean((0,1,3,4))
-            # histogram_statistics = [skewness]
-
-            # histo_stats = torch.stack([stat(dxw_target) for stat in histogram_statistics])
-            histo_stats = skewness(dx)
-            histo_stats = np.sqrt(0.5) * histo_stats[:, 0, :, 0, :]
-
-            y = torch.cat([y, histo_stats], dim=1)
+            # compute histogram statistics 
+            skewness = torch.sigmoid(4*dx/dx_target_norm[None,:,:,None,:]).mean(-1, keepdim=True)[0,0,:,0,0]
+            kurtosis = (dx/dx_target_norm[None,:,:,None,:]).abs().mean((0,1,3,4)).pow(2.0)
+            log_envelopes = Sx[0].abs().add(1e-2).log()
+            log_energy = log_envelopes.pow(2.0).mean((1, -2, -1))[...,None]
+            log_energy = log_energy / self.sigma_lnmW.pow(2.0)[:,0,:,None]
+            
+            y = torch.cat([
+                y,
+                skewness[None,:,None],
+                kurtosis[None,:,None],
+                log_energy/10
+            ], dim=1)
 
         Rx = DescribedTensor(x=x, y=y, df=self.df)
 

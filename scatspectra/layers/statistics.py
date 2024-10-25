@@ -1,7 +1,6 @@
 """ Moments to be used on top of a scattering transform. """
 from typing import List, Iterable
 from itertools import product
-import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -120,10 +119,11 @@ class Correlation(nn.Module):
     """ Diagonal model along scales. """
 
     def __init__(self,
-                 rl: int,
-                 rr: int,
-                 sc_idxer: ScaleIndexer,
-                 ave: Estimator | None = None):
+        rl: int,
+        rr: int,
+        sc_idxer: ScaleIndexer,
+        ave: Estimator | None = None
+    ):
         super(Correlation, self).__init__()
         self.sc_idxer = sc_idxer
 
@@ -139,16 +139,18 @@ class Correlation(nn.Module):
         self.ave = ave or TimeAverage()
 
     @staticmethod
-    def get_channel_idx(Nl, Nr, diago_n):
-        if diago_n:
-            nl = nr = torch.arange(Nl)
-        else:
+    def get_channel_idx(Nl: int, Nr: int, multivariate: bool):
+        if multivariate:
             nl, nr = torch.tensor(list(product(range(Nl), range(Nr)))).T
+        else:
+            nl = nr = torch.arange(Nl)
         return nl, nr
 
-    def forward(self, sxl: torch.Tensor,
-                sxr: torch.Tensor | None = None,
-                diago_n: bool | None = True) -> torch.Tensor:
+    def forward(self, 
+        sxl: torch.Tensor,
+        sxr: torch.Tensor | None = None,
+        multivariate: bool = True
+    ) -> torch.Tensor:
         """ Extract diagonal covariances j2=j'2.
 
         :param sxl: B x Nl x jl x Al x T tensor
@@ -163,7 +165,7 @@ class Correlation(nn.Module):
         xl, xr = sxl[:, :, scl, 0, :], sxr[:, :, scr, 0, :]
 
         # select communicating channels
-        nl, nr = self.get_channel_idx(sxl.shape[1], sxr.shape[1], diago_n)
+        nl, nr = self.get_channel_idx(sxl.shape[1], sxr.shape[1], multivariate)
         xl, xr = xl[:, nl, ...], xr[:, nr, ...]
 
         y = self.ave(xl * xr.conj())
@@ -174,9 +176,11 @@ class Correlation(nn.Module):
 class CorrelationScaleInvariant(nn.Module):
     """ Reduced representation by making correlations invariant to scaling. """
 
-    def __init__(self, sc_idxer: ScaleIndexer,
-                 df_scale_input: pd.DataFrame,
-                 skew_redundance: bool):
+    def __init__(self, 
+        sc_idxer: ScaleIndexer,
+        df_scale_input: pd.DataFrame,
+        skew_redundance: bool
+    ):
         super(CorrelationScaleInvariant, self).__init__()
         self.df_scale_input = df_scale_input
         self.skew_redundance = skew_redundance
@@ -184,7 +188,7 @@ class CorrelationScaleInvariant(nn.Module):
             'P', self._construct_invariant_projector(sc_idxer.JQ(1))
         )
 
-    def _construct_invariant_projector(self, J) -> torch.Tensor:
+    def _construct_invariant_projector(self, J: int) -> torch.Tensor:
         """ The projector P that takes a scattering covariance matrix C and computes PC the invariant projection. """
 
         df = self.df_scale_input

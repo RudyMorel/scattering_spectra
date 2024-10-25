@@ -6,11 +6,20 @@ They can be used for time-series **analysis** and **generation**, but also to as
 
 For a quick start, see `tutorial.ipynb`
 
+<p align="center">
+    <img src="illustration/anim_generation.gif" alt="animated" width="1000px" loop="infinite"/>
+</p>
+<p align="center">
+    <b>Generation of S&P log-returns in a Scattering Spectra model.</b>
+</p>
+
 ## Installation
 
 From a venv with python>=3.10 run the commands below to install the required packages.
 
 ```bash
+python -m venv ~/venvs/myenv
+source ~/venvs/myenv/bin/activate
 pip install git+https://github.com/RudyMorel/scattering_spectra
 ```
 
@@ -21,17 +30,17 @@ The *Scattering Spectra* provide a dashboard to analyze time-series.
 Standard model of time series can be loaded using **load_data** from `frontend.py`. The function **analyze** computes the *Scattering Spectra*, they can be visualized using the function **plot_dashboard**.
 
 ```python
-from scatspectra import load_data, analyze
+from scatspectra import load_data, SPDaily, analyze, plot_dashboard
 
 # DATA
 x_brownian = load_data(name='fbm', R=256, T=6063, H=0.5)
-x_mrw = load_data(name='mrw', R=256, T=6063, H=0.5, lam=0.1)
-x_snp = load_data(name='snp')  # S&P500 daily prices from 2000 to 2024
+x_mrw = load_data(name='mrw', R=256, T=6063, H=0.5, lam=0.2)
+x_snp = SPDaily().lnx  # S&P500 daily prices from 2000 to 2024
 
 # ANALYSIS
 scat_brownian = analyze(x_brownian)
 scat_mrw = analyze(x_mrw)
-scat_snp = analyze(np.log10(x_snp))
+scat_snp = analyze(x_snp)
 
 # VISUALIZATION
 plot_dashboard([scat_brownian, scat_mrw, scat_snp], labels=['Brownian', 'MRW', 'S&P']);
@@ -79,17 +88,17 @@ Function **generate** from `frontend.py` takes observed data $x$ as input and re
 from scatspectra import generate
 
 # DATA
-x = load_data(name='mrw', R=1, T=4096, H=0.5, lam=0.3)
+snp_data = SPDaily()
 
 # GENERATION
-x_gen = generate(x, cuda=True, tol_optim=1e-2)
+gen_data = generate(snp_data, cuda=CUDA, tol_optim=6e-3)
 
 # VISUALIZATION
-fig, axes = plt.subplots(2, 1, figsize=(10,5))
-axes[0].plot(np.diff(x)[0,0,:], color='lightskyblue', linewidth=0.5)
-axes[1].plot(np.diff(x_gen)[0,0,:], color='coral', linewidth=0.5)
-axes[0].set_ylim(-0.1,0.1)
-axes[1].set_ylim(-0.1,0.1)
+fig, axes = plt.subplots(2, 1, figsize=(10, 4))
+axes[0].plot(snp_data.dlnx[0, 0, :], color="lightskyblue", linewidth=0.5)
+axes[1].plot(gen_data.dlnx[0, 0, :], color="coral", linewidth=0.5)
+axes[0].set_ylim(-0.1, 0.1)
+axes[1].set_ylim(-0.1, 0.1)
 ```
 
 ![alt text](illustration/generation.png "Generation of a signal")

@@ -4,7 +4,7 @@ Notations.
 
 Dimension sizes:
 - B: data batch size
-- R: number of realizations (used to estimate scattering covariance)
+- R: number of realizations (used to estimate scattering spectra)
 - N: number of data channels (N>1 : multivariate process)
 - T: number of data samples (time samples)
 - J: number of scales (octaves)
@@ -12,12 +12,12 @@ Dimension sizes:
 - r: number of convolutional layers in a scattering model
 
 Tensor shapes:
-- x: input, of shape  (B, N, T)
+- x: input time-series data, of shape  (B, N, T)
 - Rx: output (DescribedTensor), 
     - y: tensor of shape (B, K, T) with K the number of coefficients in the representation
     - descri: pandas DataFrame of shape K x nb_attributes used, description of the output tensor y
 """
-import os
+from pathlib import Path
 from itertools import product
 from time import time
 import numpy as np
@@ -26,17 +26,17 @@ import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 
-from scatspectra.utils import to_numpy
 from scatspectra.data_source import (
-    DataGeneratorBase,
-    PoissonGenerator, FBmGenerator, MRWGenerator, SMRWGenerator, SPDaily
+    TimeSeriesDataset, PoissonGenerator, FBmGenerator, 
+    MRWGenerator, SMRWGenerator, SPDaily, PriceData
 )
 from scatspectra.models import Model, ADMISSIBLE_MODEL_TYPES
 from scatspectra.layers import (
     DescribedTensor, MSELossScat, format_np, Solver, CheckConvCriterion, 
-    SmallEnoughException, MaxIteration,
+    SmallEnoughException, Estimator
 )
 from scatspectra.description import make_description_compatible
+from scatspectra.utils import to_numpy, set_seed, cumsum_zero
 
 
 ##################
@@ -44,23 +44,25 @@ from scatspectra.description import make_description_compatible
 ##################
 
 def load_data(
-    name, R=None, T=None,
-    cache_path=None, num_workers=1, 
-    verbose=True,
+    name       : str, 
+    R          : int, 
+    T          : int,
+    cache_path : Path | str | None = None, 
+    num_workers: int = 1, 
+    verbose    : bool = True,
     **model_params
-):
+) -> np.ndarray:
     """ Load log-prices from standard models e.g. fBm, Poisson, MRW, SMRW.
 
-    :param model_name: fbm, poisson, mrw, smrw, hawkes, turbulence or snp
+    :param name: fbm, poisson, mrw, smrw, hawkes, turbulence or snp
     :param R: number of realizations
     :param T: number of time samples
-    :param cache_path: the directory used to cache data
+    :param cache_path: the directory used to store data
     :param num_workers: set num_workers > 1 for parallel generation
     :param model_params: model parameters (e.g. intermittency parameter for MRW)
-    :return: dataloader
     """
     if name == 'snp':
-        return SPDaily().x
+        return SPDaily().lnx
 
     generator = {
         'fbm': FBmGenerator,
@@ -89,51 +91,78 @@ def load_data(
 ##################
 
 
-def compute_sigma2(x, J, Q, wav_type, wav_norm, high_freq, rpad, cuda, nchunks):
+def compute_sigma2(
+    x                : np.ndarray,
+    J                : int,
+    Q                : int,
+    wav_type         : str,
+    high_freq        : float,
+    reflection_pad   : bool,
+    cuda             : bool,
+    nchunks          : int,
+    histogram_moments: bool
+) -> torch.Tensor:
     """Computes sigma(j)^2 = <|Wx(t,j)|^2>_t used to normalize wavelet coefficients. 
 
-    :param x: input tensor of shape (batch_size, in_channels, ..., T)
-    :param J: 
-    :param Q:
-    :param wav_type: _description_
-    :param wav_norm: _description_
-    :param high_freq: _description_
-    :param rpad: _description_
-    :param cuda: _description_
-    :return: _description_
+    :param x: input tensor of shape (batch_size, in_channels, T)
+    :param J: number of scales (octaves) for each wavelet layer
+    :param Q: number of wavelets per octave for each wavelet layer
+    :param wav_type: wavelet type for each layer, e.g. 'battle_lemarie'
+    :param high_freq: central frequency of mother wavelet for each layer, 0.5 may lead to important aliasing
+    :param reflection_pad: use a reflection pad to account for edge effects
+    :param cuda: use GPU (cuda) for accelaerating computation
     """
-    # initialize model
-    model = Model(model_type="scat_marginal", T=x.shape[-1], r=1, J=J, Q=Q,
-                  wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
-                  A=None, rpad=rpad, channel_transforms=None, N=x.shape[1],
-                  Ns=None, diago_n=True, cross_params=None,
-                  sigma2=None, sigma2_L1=None, sigma2_L2=None,
-                  sigma2_Lphix=None, norm_on_the_fly=False,
-                  estim_operator=None, qs=[2.0], coeff_types=None,
-                  dtype=x.dtype, histogram_moments=False,
-                  skew_redundance=False, nchunks=nchunks)
+    # initialize model, here just a wavelet transform
+    model = Model(
+        model_type=None, gen_log_returns=True, T=x.shape[-1], r=1, J=J, Q=Q,
+        wav_type=wav_type, wav_norm='l1', high_freq=high_freq,
+        A=None, rpad=reflection_pad,
+        N=x.shape[1], multivariate_model=False,
+        sigma2=None, norm_on_the_fly=False,
+        estim_operator=None, qs=None, coeff_types=None,
+        dtype=x.dtype, 
+        histogram_moments=histogram_moments, histogram_norm=None,
+        skew_redundance=False, nchunks=nchunks
+    )
 
     if cuda:
         x = x.cuda()
         model = model.cuda()
 
-    # compute sigma2
-    sigma2 = model(x).y.real.reshape(x.shape[0], x.shape[1], -1)  # (B, N, J)
+    # wavelet coefficients
+    Wx = model.compute_scattering_coefficients(x[:,:,None,None,:], None)[0]
+    
+    # variance of wavelet coefficients, also called wavelet power-spectrum
+    sigma2 = Wx.abs().pow(2.0).mean(-1)[:,:,:,0]   
 
-    return sigma2
+    if histogram_moments:
+        Wx = Wx / sigma2.pow(0.5)[:,:,:,None,None]
+        sigma2_hist = Wx[:,:,:,0,:].abs().add(1e-2).log().pow(2.0).mean(-1)
+        return sigma2_hist
+    else: 
+        return sigma2
 
 
 def analyze(
-    x, model_type="scat_spectra", r=2,
-    J=None, Q=1, wav_type="battle_lemarie", wav_norm="l1",
-    high_freq=0.425, rpad=True,
-    normalize='batch_ps', sigma2=None, keep_ps=True,
-    diago_n=True, cross_params=None,
-    qs=[1.0, 2.0], estim_operator=None,
-    histogram_moments=False, skew_redundance=True,
-    cuda=False, nchunks=1
-):
-    """ Compute scattering based model.
+    x              : np.ndarray,
+    model_type     : str = "scat_spectra", 
+    r              : int = 2,
+    J              : int | None = None, 
+    Q              : int = 1, 
+    wav_type       : str = "battle_lemarie",
+    high_freq      : float = 0.425, 
+    reflection_pad : bool = True,
+    skew_redundance: bool = True,
+    normalize      : str | None = 'batch_ps', 
+    sigma2         : torch.Tensor | None = None, 
+    keep_ps        : bool = True,
+    multivariate   : bool = True, 
+    qs             : list[float] = [1.0, 2.0], 
+    estim_operator : Estimator | None = None, 
+    cuda           : bool = False, 
+    nchunks        : int = 1
+) -> DescribedTensor:
+    """ Compute scattering based statistics on the provided data.
 
     :param x: an array of shape (T, ), (B, T) or (B, N, T)
     :param model_type: moments to compute on scattering
@@ -144,25 +173,25 @@ def analyze(
         "inv_scat_spectra": invariant scattering spectra, same as "scat_spectra" but now 
             consider the self-similar projection of matrix <Sx Sx^T>_t
         "scat_marginal+scat_spectra": both "scat_marginal" and "scat_spectra"
-    :param r: number of wavelet layers
-    :param J: number of octaves for each wavelet layer
-    :param Q: number of scales per octave for each wavelet layer
-    :param wav_type: wavelet types for each wavelet layer
-    :param wav_norm: wavelet normalization i.e. l1, l2 for each layer
+    :param J: number of scales (octaves) for each wavelet layer
+    :param Q: number of wavelets per octave for each wavelet layer
+    :param wav_type: wavelet type for each layer, e.g. 'battle_lemarie'
     :param high_freq: central frequency of mother wavelet for each layer, 0.5 may lead to important aliasing
-    :param rpad: if true, uses a reflection pad to account for edge effects
+    :param reflection_pad: use a reflection pad to account for edge effects
+    :param skew_redundance: whether to consider jl1=jr1 for skewness coefficients
     :param normalize:
         None: no normalization,
         'each_ps': normalize wavelet coefficients by their energy on each time-series 
         'batch_ps': normalize wavelet coefficients by their energy averaged on the batch
     :param sigma2: a tensor of size B x N x J, override normalization
     :param keep_ps: keep the power spectrum even after normalization
-    :paran diago_n: diagonal model along input channels
+    :param multivariate: take correlations across input channels (i.e. input time-series)
     :param cross_params: dictionary containing cross-cov model parameters
     :param qs: exponent to use in a "scat_marginal" or "scat+scat_spectra" model
-    :param estim_operator: the operator computing the average on time <.>_t by,
+    :param estim_operator: the operator computing the average on time <.>_t,
         uniform average by default. 
-    :param cuda: does calculation on gpu
+    :param cuda: use GPU (cuda) for accelaerating computation
+    :param nchunks: number of data chunks to process, increase it to reduce memory usage
     """
     if model_type not in ADMISSIBLE_MODEL_TYPES:
         raise ValueError(f"Unrecognized model type {model_type}.")
@@ -181,9 +210,6 @@ def analyze(
     x = torch.tensor(format_np(x))
     B, N, T = x.shape
 
-    if x.shape[1] > 1 and not diago_n:
-        raise ValueError("Multi-variate is currently under development.")
-
     if x.dtype not in [torch.float32, torch.float64]:
         x = x.type(torch.float32)
         print("WARNING. Casting data to torch.float32.")
@@ -195,7 +221,7 @@ def analyze(
     # compute normalization
     if normalize is not None and sigma2 is None:
         sigma2 = compute_sigma2(
-            x, J, Q, wav_type, wav_norm, high_freq, rpad, cuda, nchunks
+            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, False
         )
         if normalize == 'batch_ps':
             sigma2 = sigma2.mean(0, keepdim=True)
@@ -204,13 +230,14 @@ def analyze(
 
     # initialize model
     model = Model(
-        model_type=model_type, T=T, r=r, J=J, Q=Q,
-        wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
-        A=None, rpad=rpad, channel_transforms=None, N=N,
-        Ns=None, diago_n=diago_n, cross_params=cross_params,
+        model_type=model_type, gen_log_returns=False, T=T, r=r, J=J, Q=Q,  # gen_log_returns: won't be used
+        wav_type=wav_type, wav_norm='l1', high_freq=high_freq,
+        A=None, rpad=reflection_pad,
+        N=N, multivariate_model=multivariate,
         sigma2=sigma2, norm_on_the_fly=False,
         estim_operator=estim_operator, qs=qs, coeff_types=None,
-        dtype=x.dtype, histogram_moments=histogram_moments,
+        dtype=x.dtype, 
+        histogram_moments=False, histogram_norm=None,
         skew_redundance=skew_redundance, nchunks=nchunks
     )
 
@@ -232,15 +259,16 @@ def analyze(
             Rx.y[:, mask_mean, :] = Rx.y[:, mask_mean, :] * sigma2_bJ.pow(0.5)
         # 2. the variances: <|Wx(t,j)|^2>_t
         #    otherwise would output 1.0 = <|Wx(t,j)|^2>_t / <|Wx(t,j)|^2>_t
-        for n in range(N):
+        for (nl, nr) in product(range(N),range(N)):
             mask_ps = (
                 Rx.df
-                .eval(f"coeff_type=='variance' & nl=={n} & nr=={n}")
+                .eval(f"coeff_type=='variance' & nl=={nl} & nr=={nr}")
                 .values
             )
             if mask_ps.sum() != 0:
-                sigma2_bj = sigma2[:, n, :].reshape(sigma2.shape[0], -1, 1)
-                Rx.y[:, mask_ps, :] = Rx.y[:, mask_ps, :] * sigma2_bj
+                sigma2_bjl = sigma2[:, nl, :].reshape(sigma2.shape[0], -1, 1)
+                sigma2_bjr = sigma2[:, nr, :].reshape(sigma2.shape[0], -1, 1)
+                Rx.y[:, mask_ps, :] = Rx.y[:, mask_ps, :] * (sigma2_bjl * sigma2_bjr).pow(0.5)
 
     if cuda:
         Rx = Rx.cpu()
@@ -248,7 +276,7 @@ def analyze(
     return Rx
 
 
-def format_to_real(Rx):
+def format_to_real(Rx: DescribedTensor) -> DescribedTensor:
     """ Transforms a complex described tensor z into a real tensor (Re z, Im z). """
     if "is_real" not in Rx.df:
         raise ValueError("Described tensor should have a column indicating " +
@@ -271,18 +299,22 @@ def format_to_real(Rx):
 
 
 def self_simi_obstruction_score(
-    x, Rx=None, J=None, Q=1, 
-    wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-    nchunks=1, cuda=False
-):
+    x        : np.ndarray | None, 
+    Rx       : DescribedTensor| None = None, 
+    J        : int | None = None, 
+    Q        : int = 1, 
+    wav_type : str = 'battle_lemarie', 
+    high_freq: float = 0.425,
+    nchunks  : int = 1, 
+    cuda     : bool = False
+) -> tuple:
     """ Quantifies obstruction to self-similarity in a certain range of scales.
 
     :param x: an array of shape (T, ) or (B, T) or (B, N, T)
     :param Rx: overwrite representation on which to assess self-similarity, should be a normalized representation
-    :param J: number of octaves for each wavelet layer
-    :param Q: number of scales per octave for each wavelet layer
-    :param wav_type: wavelet types for each wavelet layer
-    :param wav_norm: wavelet normalization i.e. l1, l2 for each layer
+    :param J: number of scales (octaves) for each wavelet layer
+    :param Q: number of wavelets per octave for each wavelet layer
+    :param wav_type: wavelet type for each layer, e.g. 'battle_lemarie'
     :param high_freq: central frequency of mother wavelet for each layer, 0.5 gives important aliasing
     :param nchunks: nb of chunks, increase it to reduce memory usage
     :param cuda: does calculation on gpu
@@ -291,20 +323,23 @@ def self_simi_obstruction_score(
         - score on white noise reference (gives the score estimation error)
         - score on x
     """
+    assert x is not None or Rx is not None, "Should provide either x or Rx."
     if Rx is None:
-        Rx = analyze(x, model_type='scat_spectra', r=2, J=J, Q=Q,
-                     wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
-                     normalize='batch_ps',
-                     estim_operator=None, cuda=cuda, nchunks=nchunks).mean_batch()
+        Rx = analyze(
+            x, model_type='scat_spectra', r=2, J=J, Q=Q,
+            wav_type=wav_type, high_freq=high_freq, normalize='batch_ps',
+            estim_operator=None, cuda=cuda, nchunks=nchunks
+        ).mean_batch()
 
     # white noise reference score
     Rx_wn = None
     if x is not None:
         x_wn = np.random.randn(*x.shape)
-        Rx_wn = analyze(x_wn, model_type='scat_spectra', r=2, J=J, Q=Q,
-                        wav_type=wav_type, wav_norm=wav_norm, high_freq=high_freq,
-                        normalize='batch_ps',
-                        estim_operator=None, cuda=cuda, nchunks=nchunks).mean_batch()
+        Rx_wn = analyze(
+            x_wn, model_type='scat_spectra', r=2, J=J, Q=Q,
+            wav_type=wav_type, high_freq=high_freq, normalize='batch_ps',
+            estim_operator=None, cuda=cuda, nchunks=nchunks
+        ).mean_batch()
 
     def self_simi_score_spars(Rx):
         Wx1 = Rx.query(coeff_type='spars', is_low=False).y[:, :, 0]
@@ -364,132 +399,305 @@ def self_simi_obstruction_score(
 # GENERATION
 ##################
 
-class ScatGenerator(DataGeneratorBase):
-    """ A data loader for generation. Caches the generated time-series. """
 
-    def __init__(self, B, cache_path, verbose, **kwargs):
-        super(ScatGenerator, self).__init__(
-            model_name="scattering", B=B, cache_path=cache_path,**kwargs
+def init_x0(
+    target_data    : PriceData, 
+    target_length  : int, 
+    S              : int, 
+    gen_log_returns: bool = True
+) -> np.ndarray:
+    """ Initialize the white noise (or Brownian time-series) x0 
+    used as initial guess for the optimization through gradient descent."""
+    if not gen_log_returns:
+        target_length -= 1
+    N = target_data.dlnx.shape[1]
+
+    # estimate mean and std on target_data log-returns 
+    mean_dlnx = target_data.dlnx.mean((0,2), keepdims=True)  # array of shape (N,)
+    sigma_dlnx = target_data.dlnx.std((0,2), keepdims=True)  # array of shape (N,)
+
+    # Gaussian log-returns of same mean and std
+    dlnx0 = mean_dlnx + sigma_dlnx * np.random.randn(S, N, target_length)
+
+    # renormalize the log-price time-series
+    if not gen_log_returns:
+        mean_lnx = target_data.lnx.mean((0,2), keepdims=True)
+        sigma_lnx = target_data.lnx.std((0,2), keepdims=True)
+        lnx0 = cumsum_zero(dlnx0)
+        lnx0 -= lnx0.mean(-1, keepdims=True)
+        lnx0 /= lnx0.std(-1, keepdims=True)
+        lnx0 = mean_lnx + sigma_lnx * lnx0
+        return lnx0
+
+    return dlnx0 
+
+
+def generate(
+    # Target data arguments
+    x                 : PriceData | np.ndarray | None = None,
+    Rx                : DescribedTensor | None = None,
+    gen_length        : int | None = None,
+    # Model arguments
+    model_type        : str = "scat_spectra",
+    r                 : int = 2,
+    J                 : int | None = None,
+    Q                 : int = 1,
+    wav_type          : str = 'battle_lemarie',
+    high_freq         : float = 0.425,
+    reflection_pad    : bool = True,
+    multivariate_model: bool = False,
+    qs                : list[float] | None = None,
+    coeff_types       : list[str] | None = None,
+    gen_log_returns   : bool = True,
+    histogram_moments : bool = False,
+    # Optimization arguments
+    x0                : PriceData | np.ndarray | None = None,
+    R                 : int = 1,
+    max_iterations    : int = 1000,
+    tol_optim         : float = 1e-3,
+    seed              : int | None = None,
+    nchunks           : int = 1,
+    batch_size        : int = 1,
+    # Other arguments
+    cache_path        : Path | str | None = None,
+    load_cache        : bool = True,
+    trace_path        : Path | str | None = None,
+    cuda              : bool = False,
+    verbose           : bool = True
+) -> PriceData:
+    """ Generate time-series from a scattering model. 
+    
+    :param x: input data to estimate our model from
+        np.array of shape (B,N,T) or (N,T) or (T,), 
+            of the log-price (if gen_log_returns==False) or log-returns (if gen_log_returns==True)
+        or PriceData object
+    :param Rx: the scattering statistics to generate from,
+        if x is not provided, generation is done on these provided statistics
+    :param gen_length: generated data length,
+        the algorithm supports generation of shorter or longer time-series
+    :param model_type: moments to compute on scattering
+        None: compute Sx = (Wx, W|Wx|) and keep time axis t
+        "scat_marginal": compute marginal statistics on Sx: <|Sx|^q>_t
+        "scat_spectra": compute scattering spectra which corresponds to 
+            <Sx>_t and <Sx Sx^T>_t
+        "inv_scat_spectra": invariant scattering spectra, same as "scat_spectra" but now 
+            consider the self-similar projection of matrix <Sx Sx^T>_t
+        "scat_marginal+scat_spectra": both "scat_marginal" and "scat_spectra"
+    :param r: number of convolutional layers in a scattering model
+    :param J: number of scales (octaves) for each wavelet layer
+    :param Q: number of wavelets per octave for each wavelet layer
+    :param wav_type: wavelet type for each layer, e.g. 'battle_lemarie'
+    :param high_freq: central frequency of mother wavelet for each layer, 0.5 may lead to important aliasing
+    :param reflection_pad: use a reflection pad to account for edge effects
+    :param multivariate_model: take correlations across input channels (i.e. input time-series)
+    :param qs: exponent to use in a "scat_marginal" or "scat+scat_spectra" model
+    :param coeff_types: subselection of coefficient types to generate on
+    :param gen_log_returns: generate on the log-returns or on the log-prices
+    :param histogram_moments: use histogram moments
+    :param x0: initial time-series to start the optimization
+    :param R: number of realizations to generate
+    :param max_iterations: maximum number of optimization iterations
+    :param tol_optim: tolerance to stop optimization
+    :param seed: seed for initial generating initial white noise x0 
+    :param nchunks: number of data chunks to process, increase it to reduce memory usage
+    :param batch_size: number of time-series to generate in parallel
+    :param cache_path: the directory used to store data
+    :param load_cache: load already generated data
+    :param trace_path: if provided, will save all the iterations of the data during gradient descent
+    :param cuda: use GPU (cuda) for accelaerating computation
+    :param verbose: Verbosity level for logging
+    """
+    # arguments checks and formatting
+    if x is None and Rx is None:
+        raise Exception(
+            "Should provide either target data to estimate statistics on" + 
+            "or statistics to generate from."
         )
-        self.verbose = verbose
+    if x is None and gen_length is None:
+        raise Exception("Should provide the shape of data to generate.")
+    if x is None and J is None:
+        raise Exception("Should provide the number of scales J if no target data is provided.")
+    assert batch_size <= R, "Batch size should be smaller than the number of time-series to generate."
+    x_init = 100.0
+    if isinstance(x, PriceData):
+        x_init = x.x[...,0]
+        if gen_log_returns:
+            x = torch.tensor(x.dlnx)
+        else:
+            x = torch.tensor(x.lnx)
+    elif isinstance(x, np.ndarray):
+        x_init = None if gen_log_returns else np.exp(x[...,0])
+        x = torch.tensor(format_np(x))
+    if x is not None and x.shape[0] > 1:
+        raise Exception("Only a single example from the target is allowed.")
+    if batch_size > 1:
+        print("WARNING. Batch size > 1 was not tested extensively.")
+    if histogram_moments and not gen_log_returns:
+        raise ValueError("Histogram moments should be used with log-returns directly.")
+    if histogram_moments and gen_length is not None:
+        raise ValueError("Histogram moments not yet implemented with arbitrary generation length.")
+    if gen_length is None:  # means that target_data was provided
+        gen_length = x.shape[-1]
+    if x is not None:
+        dtype = x.dtype
+    else: 
+        dtype = Rx.y.real.dtype
+    if cache_path is not None:
+        assert seed is None, "Seed should not be provided when caching."
+        assert x0 is None, "Initial time-series should not be provided when caching."
+    if x0 is not None:
+        assert x0.ndim == 4, "x0 should be of shape (nbatches,B,N,T)."
+        assert x0.shape[-1] == gen_length, "x0 should have the same length as target data."
+    if x is None:
+        if 'n' in Rx.df.columns:
+            N = Rx.df.n.max() + 1
+        else:
+            N = Rx.df.nr.max() + 1
+    else:
+        N = x.shape[1]
+    if N == 1 and multivariate_model:
+        raise ValueError("multivariate_model==True should be activated for multivariate data only.")
+    if histogram_moments and N > 1:
+        raise ValueError("Histogram moments not yet implemented for multivariate data.")
+    if J is None:
+        J = int(np.log2(gen_length)) - 3
+    if isinstance(cache_path, str):
+        cache_path = Path(cache_path)
+    target_pricedata = None
+    if x is not None:
+        if gen_log_returns:
+            target_pricedata = PriceData(dlnx=to_numpy(x), x_init=100.0)
+        else:
+            target_pricedata = PriceData(lnx=to_numpy(x))
+    if cache_path is not None:
+        cache_path.mkdir(parents=True, exist_ok=True)
+    if trace_path is not None:
+        trace_path.mkdir(parents=True, exist_ok=True)
 
-    def generate_batch(self, i) -> np.ndarray:
-        """ Generate a batch of data. """
+    # MODEL
+    # initialize normalization for the model (by average power spectrum)
+    if x is not None:
+        sigma2_target = compute_sigma2(
+            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, False
+        )
+    else:
+        sigma2_target = Rx.query("coeff_type=='variance'").y.real
+        sigma2_target = sigma2_target.reshape(batch_size, 1, -1)
+    sigma2_target = sigma2_target.mean(0, keepdims=True)
+    if sigma2_target.is_complex():
+        raise ValueError("Normalization sigma2 should be real!.")
+    histogram_norm = None
+    if histogram_moments:
+        sigma2_lnmW = compute_sigma2(
+            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, True
+        )
+        filters = torch.tensor(
+            [[1] * (2 ** j) + [0] * (gen_length-2**j) for j in range(J)], 
+        )
+        def multiscale_dx(x):
+            return torch.fft.ifft(torch.fft.fft(filters[:, None, :]) * torch.fft.fft(x)).real
+        dx = multiscale_dx(x)
+        sigma2_dlnx = dx.pow(2.0).mean(-1, keepdim=True)  # J N T
+        histogram_norm = sigma2_dlnx, sigma2_lnmW
 
-        config = self.config
+    # initialize model 
+    if verbose: print("Initialize model")
+    model = Model(
+        T=gen_length, N=N, norm_on_the_fly=False, 
+        gen_log_returns=gen_log_returns, model_type=model_type,
+        sigma2=sigma2_target, estim_operator=None, A=None,
+        r=r, J=J, Q=Q, wav_type=wav_type, wav_norm='l1', high_freq=high_freq,
+        rpad=reflection_pad, multivariate_model=multivariate_model,
+        qs=qs, coeff_types=coeff_types, dtype=dtype,
+        histogram_moments=histogram_moments, histogram_norm=histogram_norm,
+        skew_redundance=True, nchunks=nchunks
+    )
+    if cuda:
+        model = model.cuda()
+        if x is not None:
+            x = x.cuda()
+        if Rx is not None:
+            Rx = Rx.cuda()
+    if verbose:
+        if model.all_coeff_types is not None:
+            print(f"Model {model_type} based on {model.count_coefficients():,} statistics: ")
+            for ctype in model.df.coeff_type.sort_values().unique():
+                ncoeffs = model.count_coefficients(f"coeff_type=='{ctype}'")
+                print(f" ---- {ctype} : {ncoeffs}")
 
-        # PREPARATION
-        # set gpu
-        gpus = config['gpus']
-        if gpus is not None:
-            gpu = gpus[i % len(gpus)]
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-
-        # set seed
-        np.random.seed(config['seed'])
-
-        x_observed = None
-        if config['x'] is not None:
-            x_observed = torch.tensor(config['x'])
-
-        # shape to generate
-        B, N, T = config['shape']
-
-        # default value
-        if config['J'] is None:
-            config['J'] = int(np.log2(T)) - 3
-
-        # normalization by the average power spectrum on the batch
-        if x_observed is not None:
-            sigma2_target = compute_sigma2(
-                x_observed, config['J'], config['Q'],
-                config['wav_type'], config['wav_norm'], config['high_freq'],
-                config['rpad'], config['cuda'], config['nchunks']
+    # compute target statistics, e.g. the scattering spectra
+    if Rx is None:
+        if verbose: print("Preparing target statistics")
+        # create another model because the 
+        if gen_length != x.shape[-1]:
+            model_target = Model(
+                T=x.shape[-1], N=1, norm_on_the_fly=False, 
+                gen_log_returns=gen_log_returns, model_type=model_type,
+                sigma2=sigma2_target, estim_operator=None, A=None,
+                r=r, J=J, Q=Q, wav_type=wav_type, wav_norm='l1', high_freq=high_freq,
+                rpad=reflection_pad, multivariate_model=multivariate_model,
+                qs=qs, coeff_types=coeff_types, dtype=dtype,
+                histogram_moments=histogram_moments, histogram_norm=histogram_norm,
+                skew_redundance=True, nchunks=nchunks
             )
+            if cuda:
+                model_target = model_target.cuda()
         else:
-            sigma2_target = config['Rx'].query("coeff_type=='variance'").y.real
-            sigma2_target = sigma2_target.reshape(*config['shape'][:2], -1)
-        sigma2_target = sigma2_target.mean(0, keepdims=True)
-        if sigma2_target.is_complex():
-            raise ValueError("Normalization sigma2 should be real!.")
+            model_target = model
+        Rx = model_target(x)
+    else:
+        Rx = Rx.clone()
+        mask = Rx.eval("coeff_type=='variance'")
+        Rx.y[:,mask,:] = 1.0
 
-        # MODEL
-        if self.verbose: print("Initialize model")
-        model = Model(T=T, N=N, Ns=None, channel_transforms=None,
-                      norm_on_the_fly=False,
-                      sigma2=sigma2_target,
-                      estim_operator=None, A=None,
-                      **config)
-        if config['cuda']:
-            model = model.cuda()
-            if x_observed is not None:
-                x_observed = x_observed.cuda()
+    # OPTIMIZATION: GENERATION
+    # init loss
+    loss = MSELossScat(J=J, wrap_avg=False)
 
-        if config['Rx'] is None:
-            if self.verbose: print("Preparing target representation")
-            Rx_target = model(x_observed)
-        else:
-            Rx_target = config['Rx'].clone()
-            mask = Rx_target.eval("coeff_type=='variance'")
-            Rx_target.y[:,mask,:] = 1.0
-
-        if self.verbose:
-            if model.all_coeff_types is not None:
-                print(f"Model {config['model_type']} based on " +
-                    f"{model.count_coefficients():,} statistics: ")
-                for ctype in model.df.coeff_type.sort_values().unique():
-                    ncoeffs = model.count_coefficients(f"coeff_type=='{ctype}'")
-                    print(f" ---- {ctype} : {ncoeffs}")
-
-        # OPTIM
-        # initial time-series
-        x0 = config['x0']
+    # generate as many batches of data as needed
+    nbatches_to_gen = int(np.ceil(R/batch_size))
+    if cache_path is not None and load_cache:
+        nbatches_avail = sum(1 for _ in cache_path.iterdir())
+        nbatches_to_gen -= nbatches_avail
+    with set_seed(seed):
+        seeds = np.random.randint(1, int(1e8), size=nbatches_to_gen)
+    gen_list = []
+    ibatch = 0
+    while ibatch < nbatches_to_gen:
+        tic = time()
+        # storing
+        fname = f"{np.random.randint(int(1e5), int(1e6))}.npy"
+        if cache_path is not None and (cache_path / fname).is_file():  # very unlikely
+            print(f"File {fname} already exists.")
+            continue
+        # initial time-series x0
         if x0 is None:
-            # infer correct x0 variance
-            if x_observed is not None:
-                x0_mean = to_numpy(x_observed).mean(-1, keepdims=True)
-                x0_std = to_numpy(x_observed).std(-1, keepdims=True)
-            else:
-                x0_mean, x0_std = 0.0, 1.0
-            x0 = np.random.randn(B, N, T)
-            x0 -= np.mean(x0, axis=-1, keepdims=True)
-            x0 /= np.std(x0, axis=-1, keepdims=True)
-            x0 = x0_mean + x0_std * x0
+            seed_batch = seeds[ibatch]
+            with set_seed(seed_batch):
+                x0_batch = init_x0(target_pricedata, gen_length, batch_size, gen_log_returns)
         else:
-            x0 = x0[:,i,:,:]     
-
-        # init loss, solver and convergence criterium
-        loss = MSELossScat(
-            J=config['J'], histogram_moments=False, 
-            wrap_avg=config['model_type']=='cov'
-        )
+            x0_batch = x0[ibatch,:,:,:]
+        # init solver and convergence criterium
         solver = Solver(
-            shape=torch.Size((B, N, T)), model=model, loss=loss,
-            Rx_target=Rx_target, x0=x0, cuda=config['cuda']
+            shape=torch.Size((batch_size,N,gen_length)), model=model, loss=loss,
+            Rx_target=Rx, x0=x0_batch, cuda=cuda
         )
         check_conv_criterion = CheckConvCriterion(
-            solver=solver, tol=config['tol_optim'], verbose=self.verbose
+            solver=solver, tol=tol_optim, save_interval_data=trace_path and 1, verbose=verbose
         )
-
-        method, maxfun, jac = config['method'], config['maxfun'], config['jac']
-        maxiter = config['max_iterations']
-
-        tic = time()
-
-        # Decide if the function provides gradient or not
-        func = solver.joint if jac else solver.function
         try:
             res = scipy.optimize.minimize(
-                func, x0.ravel(),
-                method=method, jac=jac, callback=check_conv_criterion,
+                solver.joint, x0_batch.ravel(),
+                method='L-BFGS-B', jac=True, callback=check_conv_criterion,
                 options={
                     'ftol': 1e-24, 'gtol': 1e-24,
-                    'maxiter': maxiter, 'maxfun': maxfun
+                    'maxiter': max_iterations, 'maxfun': 2e6
                 }
             )
-            if res['nit'] == maxiter:
+            if res['nit'] == max_iterations:
                 # do not accept syntheses which haven't converged
-                raise MaxIteration("MAX ITERATIONS REACHED. Optim failed.")
+                print("MAX ITERATIONS REACHED. Optim failed.")
+                continue
         except SmallEnoughException:  # raised by check_conv_criterion
             x_synt = check_conv_criterion.result
             it = check_conv_criterion.counter
@@ -502,86 +710,43 @@ class ScatGenerator(DataGeneratorBase):
 
             flo, fgr = solver.joint(x_synt)
             flo, fgr = flo, np.max(np.abs(fgr))
-            x_synt = x_synt.reshape(x0.shape)
+            x_synt = x_synt.reshape(x0_batch.shape)
 
             if not isinstance(msg, str):
                 msg = msg.decode("ASCII")
             
-            if self.verbose: 
+            if verbose: 
                 print(f"Optimization Exit Message : {msg}")
-                print(f"found parameters in {toc - tic:0.2f}s, {it}" +
-                    f" iterations -- {it / (toc - tic):0.2f}it/s")
+                print(f"matched statistics in {toc - tic:0.2f}s, {it}" +
+                      f" iterations -- {it / (toc - tic):0.2f}it/s")
                 print(f"    abs sqrt error {flo ** 0.5:.2E}")
                 print(f"    relative gradient error {fgr:.2E}")
                 print(f"    loss0 {np.sqrt(solver.loss0):.2E}")
 
-            if config['dtype'] == torch.float32:
+            if dtype == torch.float32:
                 x_synt = x_synt.astype(np.float32)
 
-            return x_synt  # (B, N, T)
+            if cache_path is not None:
+                np.save(cache_path/fname, x_synt)
+            else:
+                gen_list.append(x_synt)
+            # save intermediate time-series
+            if trace_path is not None:
+                optim_trace = np.stack(check_conv_criterion.logs_x)
+                np.save(trace_path/('full_trace'+fname), optim_trace)
+            
+            ibatch += 1
 
-
-def generate(
-    x=None, Rx=None, S=1, shape=None,
-    x0=None,
-    model_type="scat_spectra", r=2, J=None, Q=1,
-    wav_type='battle_lemarie', wav_norm='l1', high_freq=0.425,
-    rpad=True,
-    cross_params=None, diago_n=True,
-    qs=None,
-    coeff_types=None,
-    max_iterations=10000, tol_optim=5e-4, seed=None,
-    histogram_moments=False,
-    skew_redundance=True,
-    nchunks=1,
-    cache_path=None, exp_name=None,
-    cuda=False, gpus=None, num_workers=1,
-    verbose=True
-):
-
-    # to make torch with multiprocessing works
-    torch.set_num_threads(1)
-
-    if x0 is not None and x0.ndim != 4:
-        raise Exception("If provided, x0 should be of shape (B,nruns,N,T).")
-
-    config = locals().copy()
-
-    gpus = config['gpus']
-    if gpus is not None and isinstance(gpus, str):
-        config['gpus'] = [int(gpu) for gpu in gpus.split(',')]
-
-    if config['shape'] is None:
-        config['shape'] = config['x'].shape
-
-    if x is not None:
-        config['dtype'] = torch.float64 if x.dtype == np.float64 else torch.float32
-    elif Rx is not None:
-        config['dtype'] = Rx.y.real.dtype
-
-    config['method'] = 'L-BFGS-B'
-    config['maxfun'] = 2e6
-    # origin of gradient, True: provided by solver, else estimated
-    config['jac'] = True
-
-    # batch size
-    if x is not None:
-        B = x.shape[0]
-    elif shape is not None:
-        B = shape[0]
+    if cache_path is None: 
+        gen_data = np.concatenate(gen_list, axis=0)[:R,...]
     else:
-        raise Exception("Should provide the shape of data to generate.")
-    
-    data_generator = ScatGenerator(
-        B=B, verbose=verbose, 
-        **{k: v for k, v in config.items() if k not in ['S','num_workers','verbose']}
-    )
-    x_gen = data_generator.load(R=S, num_workers=num_workers)
+        gen_data = TimeSeriesDataset(cache_path, R=R).load()
 
-    # revert to default num of threads
-    torch.set_num_threads(torch.get_num_threads())
-
-    return x_gen
+    if gen_log_returns:
+        # initialize log-prices to the same value as the observed data x
+        return PriceData(dlnx=gen_data, x_init=x_init)
+    else:
+        return PriceData(lnx=gen_data)
 
 
 ##################
@@ -592,7 +757,7 @@ COLORS = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple',
           'red', 'purple', 'black', 'paleturquoise'] + ['orchid'] * 20
 
 
-def bootstrap_variance_complex(x, n_points, n_samples):
+def bootstrap_variance_complex(x: np.ndarray, n_points : int, n_samples: int) -> tuple:
     """ Estimate variance of tensor x along last axis using bootstrap method. """
     # sample data uniformly
     sampling_idx = np.random.randint(
@@ -610,7 +775,7 @@ def bootstrap_variance_complex(x, n_points, n_samples):
     return mean, var
 
 
-def error_arg(z_mod, z_err, eps=1e-12):
+def error_arg(z_mod: np.ndarray, z_err: np.ndarray, eps: float=1e-12) -> np.ndarray:
     """ Transform an error on |z| into an error on Arg(z). """
     z_mod = np.maximum(z_mod, eps)
     return np.arctan(
@@ -618,7 +783,7 @@ def error_arg(z_mod, z_err, eps=1e-12):
     )
 
 
-def get_variance_of_average(z):
+def get_variance_of_average(z: torch.Tensor) -> torch.Tensor:
     """ Compute complex variance of the average (z1 + ... + zn) / n 
     assuming z1, ..., zn are iid (variance in the central limit theorem). """
     n = z.shape[0]
@@ -631,7 +796,7 @@ def plot_raw(Rx, ax=None, legend=True):
         Colors indicate different coefficients type. 
         For each color, dark indicates real part, light indicates imag part. """
 
-    if Rx.config['model_type'] is None:
+    if Rx.y.shape[-1] > 1:
         raise Exception(
             "Plotting scattering coefficients along time, not yet supported."
         )
@@ -661,14 +826,11 @@ def plot_raw(Rx, ax=None, legend=True):
         mask_imag = np.where(Rx.df.eval(
             f"coeff_type=='{ctype}' & is_real==False"
         ))[0]
-        ax.axvspan(mask_real.min(), mask_real.max(),
-                   color=cycle[i], label=ctype if legend else None, alpha=0.65)
+        ax.axvspan(mask_real.min(), mask_real.max(), color=cycle[i], label=ctype if legend else None, alpha=0.65)
         if mask_imag.size > 0:
-            ax.axvspan(mask_imag.min(), mask_imag.max(),
-                       color=cycle[i], alpha=0.4)
+            ax.axvspan(mask_imag.min(), mask_imag.max(), color=cycle[i], alpha=0.4)
         ax.axhline(0.0, color='black', linewidth=0.02)
-    ax.plot(Rx.y[0, :, 0], linewidth=0.7, color='black',
-            marker='+', markersize=1)
+    ax.plot(Rx.y[0, :, 0], linewidth=0.7, color='black', marker='+', markersize=1)
     if legend:
         ax.legend()
     return ax, Rx.df
@@ -1136,20 +1298,6 @@ def plot_scattering_spectrum(
 
     for ax in axes.ravel():
         ax.grid(True)
-
-
-def set_same_lim(*axes, axis='y'):
-    """ Set the same limits for a list of axes. """
-    if axis == "both":
-        set_same_lim(*axes, axis='x')
-        set_same_lim(*axes, axis='y')
-        return
-    get = lambda ax: ax.get_xlim() if axis == 'x' else ax.get_ylim()
-    set = lambda ax, lim: ax.set_xlim(lim) if axis == 'x' else ax.set_ylim(lim)
-    lim_min = min([get(ax)[0] for ax in axes])
-    lim_max = min([get(ax)[1] for ax in axes])
-    for ax in axes:
-        set(ax, (lim_min, lim_max))
 
 
 def plot_dashboard(
