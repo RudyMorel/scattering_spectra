@@ -1,7 +1,12 @@
+ipykernel
+jupyter
 matplotlib
 numpy
 pandas
+pyarrow
+python_version >= "3.10"
+scikit-learn
 scipy
-tqdm
 termcolor
 torch
+tqdm
