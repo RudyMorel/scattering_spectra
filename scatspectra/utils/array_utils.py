@@ -19,7 +19,16 @@ def windows(
     offset: int = 0, 
     cover_end: bool = False
 ) -> np.ndarray:
-    """ Separate x into windows on last axis, discard any residual. """
+    """ Separate x into windows on last axis, discard any residual. 
+    
+    :param x: array of shape (..., T)
+    :param w: the window size
+    :param s: the stride
+    :param offset: the starting offset
+    :param cover_end: adjust the offset so that the last window covers the end of x
+    :return: array of shape (..., (T - w) // s + 1, w)
+    """
+    
     if offset > 0 and cover_end:
         raise ValueError("No offset should be provided if cover_end is True.")
     if offset > 0:

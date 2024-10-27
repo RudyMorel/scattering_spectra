@@ -20,4 +20,4 @@ def load_data(filename: str, /) -> pd.DataFrame | np.ndarray:
 
 
 snp_data = load_data("snp_WSJ_08_02_2024.pkl")  # SnP data
-snp_vix_data = load_data("VIX_SPX_log_return.npy")  # SnP/VIX data  #TODO: should replace the data with .csv with dates
+snp_vix_data = load_data("VIX_SPX_log_return.pkl")  # SnP/VIX data  #TODO: should replace the data with dataframe with dates

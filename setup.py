@@ -17,6 +17,7 @@ setuptools.setup(
     long_description_content_type='text/markdown',
     url='https://github.com/RudyMorel/scattering_spectra',
     license='MIT',
+    python_requires='>=3.10',
     install_requires=reqs,
     packages=setuptools.find_packages(),
-    package_data={'scatspectra': ['data/*.pkl', 'data/*.npy']},)
+    package_data={'scatspectra': ['data/*.pkl']})

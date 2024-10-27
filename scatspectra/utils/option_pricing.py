@@ -162,7 +162,7 @@ class Smile:
         K: np.ndarray | float
     ) -> np.ndarray:
         """ From strikes to rescaled log-moneyness. """
-        sigma_sqrtT = vol_atm * np.sqrt(T / 252)
+        sigma_sqrtT = vol_atm * (T / 252) ** 0.5
         M = np.log(K / 100.0) / sigma_sqrtT
         return M
 
@@ -173,7 +173,7 @@ class Smile:
         rMness: np.ndarray | float
     ) -> np.ndarray:
         """ From rescaled log-moneyness to strikes. """
-        sigma_sqrtT = vol_atm * np.sqrt(T / 252)
+        sigma_sqrtT = vol_atm * (T / 252) ** 0.5
         K = 100.0 * np.exp(rMness * sigma_sqrtT)
         return K
 
@@ -185,7 +185,7 @@ class Smile:
         rMness: list[np.ndarray] | None
     ) -> tuple[list, list]:
         """ Get the x coordinates (Ks or rMness) for the smile. """
-        sigma_sqrtT = vol_atm * np.sqrt(Ts / 252)
+        sigma_sqrtT = vol_atm * (Ts / 252) ** 0.5
         if Ks is None:
             Ks = [100.0 * np.exp(M * norm) for norm, M in zip(sigma_sqrtT, rMness)]
         if rMness is None:
@@ -206,7 +206,7 @@ class Smile:
         rMness: float | None = None
     ) -> float:
         """ Obtain smile values by interpolation. """
-        if sum([K is not None, rMness is not None]) != 1:
+        if not ((K is None) ^ (rMness is None)):
             raise ValueError("Should provide strike, log-moneyness or rescaled log-moneyness.")
 
         # maturity interpolation
