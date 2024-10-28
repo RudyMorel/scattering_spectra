@@ -18,8 +18,6 @@ For a quick start, see `tutorial.ipynb`
 From a venv with python>=3.10 run the commands below to install the required packages.
 
 ```bash
-python -m venv ~/venvs/myenv
-source ~/venvs/myenv/bin/activate
 pip install git+https://github.com/RudyMorel/scattering_spectra
 ```
 
