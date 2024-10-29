@@ -31,11 +31,15 @@ def delta_BS(K, T, sigma, S0, r):
 
 class DiscreteProba:
     """ Discrete probability distribution. """
-    def __init__(self, w: np.ndarray | None):
-        self.w = w
+    def __init__(self, weights: np.ndarray | None):
+        self.weights = weights
 
     def avg(self, x: np.ndarray, axis: int, keepdims: bool = False) -> np.ndarray:
-        return np.average(x, axis, self.w, keepdims=keepdims)
+        if self.weights is None:
+            raise ValueError("Weights are not defined.")
+        weights = self.weights[(...,)+(None,)*(x.ndim-self.weights.ndim)]
+        assert np.allclose(weights.mean(axis), 1.0)
+        return (x * weights).mean(axis, keepdims=keepdims)
 
     def variance(self, x: np.ndarray, axis: int) -> np.ndarray:
         xmean = self.avg(x, axis, keepdims=True)
@@ -46,8 +50,9 @@ class DiscreteProba:
 
 
 class Softmax(DiscreteProba):
-    def __init__(self, l2s: np.ndarray, eta: float):
-        weights = softmax(-l2s ** 2 / 2 / eta ** 2)
+    def __init__(self, distances: np.ndarray, eta: float):
+        weights = softmax(-distances ** 2 / 2 / eta ** 2)
+        weights /= weights.mean(-1, keepdims=True)
         super(Softmax, self).__init__(weights)
 
 
