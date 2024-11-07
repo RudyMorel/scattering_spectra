@@ -10,19 +10,6 @@ from torch.autograd import Variable, grad
 from scatspectra.description import DescribedTensor
 
 
-def format_np(x: np.ndarray) -> np.ndarray:
-    """ Unsqueeze x to become of shape (B, N, T). """
-    if x is None:
-        return x
-    if x.ndim == 1:
-        return x[None, None, :]
-    if x.ndim == 2:
-        return x[:, None, :]
-    if x.ndim == 3:
-        return x
-    raise Exception("Array cannot be formatted to (B,N,T) shape.")
-
-
 class Solver(nn.Module):
     """ A class that contains all information necessary for generation. """
     def __init__(

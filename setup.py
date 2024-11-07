@@ -8,7 +8,7 @@ with open('requirements.txt') as f:
 
 setuptools.setup(
     name='scatspectra',
-    version='2.0.1',
+    version='2.0.2',
     author='Rudy Morel',
     author_email='rmorel@flatironinstitute.org',
     description=
@@ -20,4 +20,5 @@ setuptools.setup(
     python_requires='>=3.10',
     install_requires=reqs,
     packages=setuptools.find_packages(),
-    package_data={'scatspectra': ['data/*.pkl']})
+    package_data={'scatspectra': ['data/*.pkl']}
+)

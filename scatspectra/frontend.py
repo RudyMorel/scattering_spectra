@@ -24,6 +24,7 @@ import numpy as np
 import scipy
 import pandas as pd
 import torch
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from scatspectra.data_source import (
@@ -32,7 +33,7 @@ from scatspectra.data_source import (
 )
 from scatspectra.models import Model, ADMISSIBLE_MODEL_TYPES
 from scatspectra.layers import (
-    DescribedTensor, MSELossScat, format_np, Solver, CheckConvCriterion, 
+    DescribedTensor, MSELossScat, Solver, CheckConvCriterion, 
     SmallEnoughException, Estimator
 )
 from scatspectra.description import make_description_compatible
@@ -89,6 +90,19 @@ def load_data(
 ##################
 # ANALYSIS
 ##################
+
+
+def format_np(x: np.ndarray) -> np.ndarray:
+    """ Unsqueeze x to be of shape (B, N, T). """
+    if x is None:
+        return x
+    if x.ndim == 1:
+        return x[None, None, :]
+    if x.ndim == 2:
+        return x[None, :, :]
+    if x.ndim == 3:
+        return x
+    raise Exception("Array cannot be formatted to (B,N,T) shape.")
 
 
 def compute_sigma2(
@@ -468,8 +482,8 @@ def generate(
     """ Generate time-series from a scattering model. 
     
     :param x: input data to estimate our model from
-        np.array of shape (B,N,T) or (N,T) or (T,), 
-            of the log-price (if gen_log_returns==False) or log-returns (if gen_log_returns==True)
+        np.array of shape (T,) or (N,T) or (B,N,T),
+        of the log-price (if gen_log_returns==False) or log-returns (if gen_log_returns==True)
         or PriceData object
     :param Rx: the scattering statistics to generate from,
         if x is not provided, generation is done on these provided statistics
@@ -660,9 +674,12 @@ def generate(
         nbatches_avail = sum(1 for _ in cache_path.iterdir())
         nbatches_to_gen -= nbatches_avail
     with set_seed(seed):
-        seeds = np.random.randint(1, int(1e8), size=nbatches_to_gen)
+        x0_seed = np.random.randint(1, int(1e8), size=1)[0]
     gen_list = []
     ibatch = 0
+    pbar = None
+    if verbose:
+        pbar = tqdm(total=nbatches_to_gen)
     while ibatch < nbatches_to_gen:
         tic = time()
         # storing
@@ -672,9 +689,9 @@ def generate(
             continue
         # initial time-series x0
         if x0 is None:
-            seed_batch = seeds[ibatch]
-            with set_seed(seed_batch):
+            with set_seed(x0_seed):
                 x0_batch = init_x0(target_pricedata, gen_length, batch_size, gen_log_returns)
+            x0_seed += 1  # increment seeds for next generation
         else:
             x0_batch = x0[ibatch,:,:,:]
         # init solver and convergence criterium
@@ -697,6 +714,8 @@ def generate(
             if res['nit'] == max_iterations:
                 # do not accept syntheses which haven't converged
                 print("MAX ITERATIONS REACHED. Optim failed.")
+                if verbose:
+                    pbar.refresh()
                 continue
         except SmallEnoughException:  # raised by check_conv_criterion
             x_synt = check_conv_criterion.result
@@ -736,6 +755,8 @@ def generate(
                 np.save(trace_path/('full_trace'+fname), optim_trace)
             
             ibatch += 1
+            if verbose:
+                pbar.update(1)
 
     if cache_path is None: 
         gen_data = np.concatenate(gen_list, axis=0)[:R,...]
