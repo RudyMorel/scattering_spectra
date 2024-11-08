@@ -6,10 +6,12 @@ import torch.nn as nn
 
 class NormalizationLayer(nn.Module):
     """ Divide certain dimension by specified values. """
-    def __init__(self,
-                 dim: int,
-                 sigma: torch.Tensor | None,
-                 on_the_fly: bool) -> None:
+    def __init__(
+        self,
+        dim: int,
+        sigma: torch.Tensor | None,
+        on_the_fly: bool
+    ) -> None:
         super(NormalizationLayer, self).__init__()
         self.dim = dim
         if sigma is not None and ((sigma <= 0).any() or torch.isnan(sigma).any()):
@@ -22,11 +24,11 @@ class NormalizationLayer(nn.Module):
         x: torch.Tensor, 
         bs: torch.Tensor | None = None
     ) -> torch.Tensor:
-        if self.sigma is None:
-            return x
         if self.on_the_fly:  # normalize on the fly
             sigma = torch.abs(x).pow(2.0).mean(-1,keepdim=True).pow(0.5)
             return x / sigma
+        if self.sigma is None:
+            return x
         sigma = self.sigma[(..., *(None,) * (x.ndim - 1 - self.dim))]
         if bs is not None and self.sigma.shape[0] > 1:
             sigma = sigma[bs,...]
@@ -63,8 +65,8 @@ class PhaseOperator(nn.Module):
 
 
 class LinearLayer(nn.Module):
-    def __init__(self,
-                 L: torch.Tensor) -> None:
+    
+    def __init__(self, L: torch.Tensor) -> None:
         super(LinearLayer, self).__init__()
         self.register_buffer("L", L)
 
