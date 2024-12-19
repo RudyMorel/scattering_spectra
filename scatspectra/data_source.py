@@ -159,11 +159,13 @@ class PriceData:
 
         if (
             x_init is not None
-            and isinstance(x_init, np.ndarray)
             and (x_init.ndim > 0)
             and x_init.shape != x[..., 0].shape
         ):
-            raise ValueError("Wrong x_init format in PriceData.")
+            raise ValueError(
+                f"Wrong x_init format in PriceData. With the provided x shape {x.shape}, "
+                f"x_init should be a scalar or an array of shape {x.shape[:-1]}"
+            )
         
         self.dts = dts
 
