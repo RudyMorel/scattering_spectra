@@ -774,8 +774,15 @@ def generate(
 # VIZUALIZE
 ##################
 
-COLORS = ['skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 
-          'red', 'purple', 'black', 'paleturquoise'] + ['orchid'] * 20
+COLORS_MAIN = [
+    'skyblue', 'coral', 'lightgreen', 'darkgoldenrod', 'mediumpurple', 
+    'red', 'purple', 'black', 'paleturquoise'
+] + ['orchid'] * 30
+
+COLORS_ENVELOPE = [
+    'slategray', 'chocolate', 'seagreen', 'crimson', 'hotpink', 'peru', 
+    'steelblue', 'darkorchid', 'indigo', 'salmon'
+] + ['orchid'] * 30
 
 
 def bootstrap_variance_complex(x: np.ndarray, n_points : int, n_samples: int) -> tuple:
@@ -863,8 +870,8 @@ def plot_marginal_moments(
     colors=None, linewidth=3.0, fontsize=30
 ):
     """ Plot the marginal moments
-        - (wavelet power spectrum) sigma^2(j)
-        - (sparsity factors) s^2(j)
+        - \Phi_2: (wavelet power spectrum) sigma^2(j)
+        - \Phi_1: (sparsity factors) s^2(j)
 
     :param Rxs: DescribedTensor or list of DescribedTensor
     :param estim_bar: display estimation error due to estimation on several realizations
@@ -881,7 +888,7 @@ def plot_marginal_moments(
     if axes is not None and axes.size != 2:
         raise ValueError(
             "The axes provided to plot_marginal_moments should be an array of size 2.")
-    colors = colors or COLORS
+    colors = colors or COLORS_MAIN
 
     labels = labels or [''] * len(Rxs)
     axes = None if axes is None else axes.ravel()
@@ -966,7 +973,8 @@ def plot_phase_envelope_spectrum(
     Rxs, estim_bar=False, self_simi_bar=False, theta_threshold=0.005,
     axes=None, labels=None, colors=None, fontsize=30, single_plot=False
 ):
-    """ Plot the phase-envelope cross-spectrum C_{W|W|}(a) as two graphs : |C_{W|W|}| and Arg(C_{W|W|}).
+    """ Plot the \Phi_3 coefficients C_{W|W|}(a) as two graphs: |C_{W|W|}| and Arg(C_{W|W|}).
+    These correspond to the phase-envelope cross-spectrum.
 
     :param Rxs: DescribedTensor or list of DescribedTensor
     :param estim_bar: display estimation error due to estimation on several realizations
@@ -982,7 +990,7 @@ def plot_phase_envelope_spectrum(
         Rxs = [Rxs]
     if labels is not None and len(Rxs) != len(labels):
         raise ValueError("Invalid number of labels")
-    colors = colors or COLORS
+    colors = colors or COLORS_MAIN
 
     labels = labels or [''] * len(Rxs)
     columns = Rxs[0].df.columns
@@ -1118,7 +1126,8 @@ def plot_scattering_spectrum(
     Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, 
     theta_threshold=0.01, axes=None, labels=None, colors=None, fontsize=40, d=1
 ):
-    """ Plot the scattering cross-spectrum C_S(a,b) as two graphs : |C_S| and Arg(C_S).
+    """ Plot the \Phi_4 coefficients C_S(a,b) as two graphs : |C_S| and Arg(C_S).
+    These correspond to the scattering spectrum.
 
     :param Rxs: DescribedTensor or list of DescribedTensor
     :param estim_bar: display estimation error due to estimation on several realizations
@@ -1136,7 +1145,7 @@ def plot_scattering_spectrum(
     if axes is not None and axes.size != 2 * len(Rxs):
         raise ValueError(
             f"Existing axes must be provided as an array of size {2 * len(Rxs)}")
-    colors = colors or COLORS
+    colors = colors or COLORS_MAIN
 
     axes = None if axes is None else axes.reshape(2, len(Rxs))
 
@@ -1227,12 +1236,12 @@ def plot_scattering_spectrum(
         z_arg[cs_mod < theta_threshold] = 0.0
 
     def plot_modulus(label, y, y_err_estim, y_err_self_simi, title):
-        for a in range(J-1):
+        plt.plot([], [], label=label, color='white', linestyle='None')
+        for (color, a) in zip(COLORS_ENVELOPE, range(J-1)):
             bs = np.arange(-J+1+a, 0)
-            line = plt.plot(bs, y[a, a:], label=label if a == 0 else '')
-            color = line[-1].get_color()
+            plt.plot(bs, y[a, a:], color=color)
             if not estim_bar and not self_simi_bar:
-                plt.scatter(bs, y[a, a:], marker='+')
+                plt.scatter(bs, y[a, a:], marker='+', color=color)
             if self_simi_bar:
                 plot_x_offset = -0.07 if self_simi_bar else 0.0
                 plt.errorbar(bs + plot_x_offset, y[a, a:],
@@ -1256,12 +1265,12 @@ def plot_scattering_spectrum(
             plt.legend(prop={'size': 15})
 
     def plot_phase(y, y_err_estim, y_err_self_simi, title):
-        for a in range(J-1):
+        for (color, a) in zip(COLORS_ENVELOPE, range(J-1)):
             bs = np.arange(-J+1+a, 0)
-            line = plt.plot(bs, y[a, a:], label=fr'$a={a}$')
+            line = plt.plot(bs, y[a, a:], label=fr'$a={a}$', color=color)
             color = line[-1].get_color()
             if not estim_bar and not self_simi_bar:
-                plt.scatter(bs, y[a, a:], marker='+')
+                plt.scatter(bs, y[a, a:], marker='+', color=color)
             if self_simi_bar:
                 plot_x_offset = -0.07 if estim_bar else 0.0
                 plt.errorbar(bs + plot_x_offset, y[a, a:],
@@ -1295,7 +1304,7 @@ def plot_scattering_spectrum(
             which='major', direction='in', width=1.5, length=7)
         ax_mod.yaxis.set_label_coords(-0.18, 0.5)
         plot_modulus(lb, cs_mod[i_lb], err_estim[i_lb],
-                     err_self_simi[i_lb], i_lb == 0)
+                     err_self_simi[i_lb], i_lb == 0 or True)
 
     for i_lb, lb in enumerate(labels):
         if axes is not None:
@@ -1305,7 +1314,7 @@ def plot_scattering_spectrum(
             ax_ph = plt.subplot2grid(
                 (2, np.unique(i_graphs).size), (1, i_graphs[i_lb]))
         plot_phase(cs_arg[i_lb], err_estim_arg[i_lb],
-                   err_self_simi_arg[i_lb], i_lb == 0)
+                   err_self_simi_arg[i_lb], i_lb == 0 or True)
         if i_lb == 0:
             ax_ph.yaxis.set_tick_params(
                 which='major', direction='in', width=1.5, length=7)
@@ -1325,7 +1334,8 @@ def plot_dashboard(
     Rxs, estim_bar=False, self_simi_bar=False, bootstrap=True, 
     theta_threshold=[0.005, 0.1],
     labels=None, colors=None, linewidth=3.0, fontsize=20, 
-    figsize=None, axes=None
+    figsize=None, axes=None,
+    plot_full_legend=False
 ):
     """ Plot the scattering covariance dashboard for multi-scale processes composed of:
         - (wavelet power spectrum) sigma^2(j)
@@ -1358,18 +1368,18 @@ def plot_dashboard(
             raise ValueError("Plotting functions do not support multi-variate"
                              " representation other than single pair.")
 
-    colors = colors or COLORS
+    colors = colors or COLORS_MAIN
 
     if axes is None:
         _, axes = plt.subplots(
             2, 2 + len(Rxs), figsize=figsize or (12+2*(len(Rxs)-1), 8))
 
-    # marginal moments sigma^2 and s^2
+    # statistics \Phi_2 and \Phi_1
     plot_marginal_moments(
         Rxs, estim_bar, axes[:, 0], labels, colors, linewidth, fontsize
     )
 
-    # phase-envelope cross-spectrum
+    # statistics \Phi_3
     plot_phase_envelope_spectrum(
         Rxs, estim_bar, self_simi_bar, theta_threshold[0],
         axes[:, 1], labels, colors, fontsize, False
@@ -1377,7 +1387,7 @@ def plot_dashboard(
     ylim = max(0.1, axes[0, 1].get_ylim()[1])
     axes[0, 1].set_ylim(-0.02, ylim)
 
-    # scattering cross spectrum
+    # statistics \Phi_4
     plot_scattering_spectrum(
         Rxs, estim_bar, self_simi_bar, bootstrap, theta_threshold[1],
         axes[:, 2:], labels, colors, fontsize
@@ -1387,5 +1397,9 @@ def plot_dashboard(
         ax.set_ylim(-0.02, ylim)
 
     plt.tight_layout()
+
+    if plot_full_legend:  # add a specific legend for \Phi_4 statistics (scattering cross-spectrum) 
+        plt.sca(axes[-1,-1])
+        plt.legend(loc='upper center',ncol=1,fontsize=20,handlelength=1.0,labelspacing=1.0, bbox_to_anchor=(1.4+0.1,2.45+0.2,0,0))
 
     return axes
