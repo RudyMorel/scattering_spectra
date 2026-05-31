@@ -49,15 +49,21 @@ class PhaseOperator(nn.Module):
     def __init__(self, A: int):
         super(PhaseOperator, self).__init__()
         phases = torch.tensor(np.linspace(0, np.pi, A, endpoint=False))
-        self.phases = torch.cos(phases) + 1j * torch.sin(phases)
+        # register as a buffer (not a plain attribute) so that .to(device),
+        # .cuda(), .float(), .double() etc. correctly move/cast it
+        self.register_buffer(
+            "phases", torch.cos(phases) + 1j * torch.sin(phases)
+        )
 
-    def cpu(self):
-        self.phases = self.phases.cpu()
-        return self
-
-    def cuda(self):
-        self.phases = self.phases.cuda()
-        return self
+    def _apply(self, fn, *args, **kwargs):
+        # The phases buffer is complex128, which the MPS backend cannot hold
+        # (no float64/complex128 support). When this module is moved to such a
+        # device, downcast the buffer to complex64 first so the move succeeds.
+        # cpu/cuda are untouched, so their precision is unchanged.
+        probe = fn(torch.zeros(1, dtype=torch.float32))
+        if probe.device.type == 'mps' and self.phases.dtype == torch.complex128:
+            self.phases = self.phases.to(torch.complex64)
+        return super()._apply(fn, *args, **kwargs)
 
     def forward(self, x):
         """ Computes Re(e^{i alpha} x) for alpha in self.phases. """

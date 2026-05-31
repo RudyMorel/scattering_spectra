@@ -159,6 +159,6 @@ def set_seed(seed: int | None) -> Generator:
 
 
 def to_numpy(tensor: torch.Tensor) -> np.ndarray:
-    if tensor.is_cuda:
+    if tensor.device.type != 'cpu':
         return tensor.detach().cpu().numpy()
     return tensor.detach().numpy()

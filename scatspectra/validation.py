@@ -7,14 +7,15 @@ from matplotlib.axes import Axes
 from scatspectra.data_source import PriceData
 from scatspectra.layers.statistics import Estimator
 from scatspectra.utils import (
-    shifted_product, windows, lighten_color, HMCPricer, Smile, implied_vol
+    shifted_product, windows, lighten_color, HMCPricer, Smile, implied_vol,
+    resolve_device
 )
 
 
 class ValidationStatistics:
 
     @NotImplementedError
-    def compute(self, data: PriceData, cuda: bool):
+    def compute(self, data: PriceData, cuda: bool = False, device=None):
         pass
     
     @NotImplementedError
@@ -36,9 +37,9 @@ class Histogram(ValidationStatistics):
         self.right = right
         self.logscale = logscale
 
-    def compute(self, data: PriceData, cuda: bool = False):
+    def compute(self, data: PriceData, cuda: bool = False, device=None):
         return data,
-    
+
     def plot(self, data, ax=None, color=None):
         if ax is None:
             _, ax = plt.subplots(figsize=(4,4))
@@ -68,9 +69,9 @@ class HistogramLogVol(ValidationStatistics):
         self.eps = eps
         self.logscale = logscale
 
-    def compute(self, data: PriceData, cuda: bool=False):
+    def compute(self, data: PriceData, cuda: bool=False, device=None):
         return data,
-    
+
     def plot(self, data, ax=None, color=None):
         if ax is None:
             _, ax = plt.subplots(figsize=(4,4))
@@ -93,12 +94,15 @@ class StructureFunctions(ValidationStatistics):
         self.qs = torch.tensor(qs)
         self.normalize = normalize
 
-    def compute(self, data: PriceData, cuda: bool = False):
-        lnx = torch.tensor(data.lnx)
-        qs = self.qs
-        if cuda:
-            lnx = lnx.cuda()
-            qs = self.qs.cuda()
+    def compute(self, data: PriceData, cuda: bool = False, device=None):
+        """
+        :param cuda: (DEPRECATED, use ``device`` instead) run on gpu
+        :param device: compute device, accepts None, 'cpu'/'cuda'/'mps'/'auto'
+            or a torch.device; takes precedence over ``cuda`` when provided
+        """
+        device = resolve_device(device, cuda)
+        lnx = torch.tensor(data.lnx).to(device)
+        qs = self.qs.to(device)
 
         if self.normalize:
             norm = lnx.diff().std()
@@ -173,7 +177,7 @@ class Leverage(ValidationStatistics):
         self.ksize = ksize
         self.standardize = standardize
 
-    def compute(self, data: PriceData, cuda: bool = False):
+    def compute(self, data: PriceData, cuda: bool = False, device=None):
         dlnx = data.dlnx.copy()
         
         if self.standardize:
@@ -280,7 +284,7 @@ class AverageSmile(ValidationStatistics):
 
         return skew, curvature, ssr
     
-    def compute(self, data, cuda=False):
+    def compute(self, data, cuda=False, device=None):
         """ Compute the average smile.
         :param x: the long price time-series
         """

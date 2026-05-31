@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch.autograd import Variable, grad
 
 from scatspectra.description import DescribedTensor
+from scatspectra.utils import resolve_device, device_supports_float64
 
 
 class Solver(nn.Module):
@@ -19,8 +20,14 @@ class Solver(nn.Module):
         loss: nn.Module,
         Rx_target: DescribedTensor,
         x0: np.ndarray,
-        cuda: bool
+        cuda: bool = False,
+        device: str | torch.device | None = None
     ):
+        """
+        :param cuda: (DEPRECATED, use ``device`` instead) run generation on gpu
+        :param device: compute device, accepts None, 'cpu'/'cuda'/'mps'/'auto'
+            or a torch.device; takes precedence over ``cuda`` when provided
+        """
         super(Solver, self).__init__()
 
         self.model = model
@@ -28,16 +35,26 @@ class Solver(nn.Module):
 
         self.shape = shape
         self.nchunks = 1
-        self.is_cuda = cuda
+        self.device = resolve_device(device, cuda)
+        self.is_cuda = self.device.type == 'cuda'
+        # MPS does not support float64. The optimization runs in double
+        # precision on cpu/cuda; on mps the time-series tensor is held in
+        # float32 (numpy arrays default to float64, so they must be cast
+        # before being moved to the device). generate's frontend already
+        # falls back to cpu for float64 targets, so float32-on-mps is the
+        # only case that reaches this branch.
+        self.dtype = (
+            torch.float64 if device_supports_float64(self.device)
+            else torch.float32
+        )
         self.x0 = self.format(x0, requires_grad=False)
 
         self.result = np.inf, np.inf
 
         self.Rx_target = Rx_target
-        if cuda:
-            self.cuda()
-            if self.Rx_target is not None:
-                self.Rx_target = self.Rx_target.cuda()
+        self.to(self.device)
+        if self.Rx_target is not None:
+            self.Rx_target = self.Rx_target.to(self.device)
 
         # compute initial loss
         Rx0 = self.model(self.x0).mean_batch()
@@ -49,8 +66,11 @@ class Solver(nn.Module):
     def format(self, x: np.ndarray, requires_grad: bool = True) -> Variable:
         """ Transforms x into a compatible format for the embedding. """
         x_torch = torch.tensor(x.reshape(self.shape))
-        if self.is_cuda:
-            x_torch = x_torch.cuda()
+        # cast to the device-compatible precision before the device move
+        # (numpy float64 cannot be moved to an mps device)
+        if x_torch.dtype == torch.float64 and self.dtype != torch.float64:
+            x_torch = x_torch.to(self.dtype)
+        x_torch = x_torch.to(self.device)
         x_torch = Variable(x_torch, requires_grad=requires_grad)
         return x_torch
 
@@ -73,9 +93,11 @@ class Solver(nn.Module):
         # compute gradient
         grad_x, = grad([loss], [x_torch], retain_graph=True)
 
-        # move to numpy
-        grad_x = grad_x.contiguous().detach().cpu().numpy()
-        loss = loss.detach().cpu().numpy()
+        # move to numpy; scipy's L-BFGS-B requires float64 for the value and
+        # gradient, so up-cast (a no-op on cpu/cuda which already run float64,
+        # needed on mps where the computation runs in float32)
+        grad_x = grad_x.contiguous().detach().cpu().numpy().astype(np.float64)
+        loss = loss.detach().cpu().numpy().astype(np.float64)
 
         self.result = loss, grad_x.ravel()
 
