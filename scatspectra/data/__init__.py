@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import pkg_resources
+from importlib.resources import files
 
 
 def load_data(filename: str, /) -> pd.DataFrame | np.ndarray:
@@ -9,7 +9,7 @@ def load_data(filename: str, /) -> pd.DataFrame | np.ndarray:
     :param x: file name
     :return: dataset
     """
-    filepath = pkg_resources.resource_filename(__name__, "" + filename)
+    filepath = str(files(__name__).joinpath(filename))
     if filepath.endswith(".csv"):
         return pd.read_csv(filepath)
     if filepath.endswith(".json"):
