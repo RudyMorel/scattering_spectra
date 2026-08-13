@@ -132,9 +132,9 @@ class Correlation(nn.Module):
 
         self.idx_l, self.idx_r = self.df_scale[['scl', 'scr']].values.T
         if rl == 2:
-            self.idx_l -= sc_idxer.JQ(1) + 1
+            self.idx_l = self.idx_l - sc_idxer.JQ(1) - 1
         if rr == 2:
-            self.idx_r -= sc_idxer.JQ(1) + 1
+            self.idx_r = self.idx_r - sc_idxer.JQ(1) - 1
 
         self.ave = ave or TimeAverage()
 
