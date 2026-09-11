@@ -105,10 +105,15 @@ class DescribedTensor:
             config=self.config
         )
 
-    def cuda(self, device: str | None = None) -> DescribedTensor:
+    def to(self, device: str | torch.device) -> DescribedTensor:
+        """ Move the underlying tensors to the given device (cpu/cuda/mps). """
         return DescribedTensor(
-            x=None if self.x is None else self.x.cuda(device=device),
-            y=self.y.cuda(device=device),
+            x=None if self.x is None else self.x.to(device),
+            y=self.y.to(device),
             df=self.df,
             config=self.config
         )
+
+    def cuda(self, device: str | None = None) -> DescribedTensor:
+        """ (DEPRECATED, use ``to`` instead) move tensors to a cuda device. """
+        return self.to(device if device is not None else 'cuda')

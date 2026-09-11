@@ -37,7 +37,10 @@ from scatspectra.layers import (
     SmallEnoughException, Estimator
 )
 from scatspectra.description import make_description_compatible
-from scatspectra.utils import to_numpy, set_seed, cumsum_zero
+from scatspectra.utils import (
+    to_numpy, set_seed, cumsum_zero, resolve_device, device_supports_float64
+)
+import warnings
 
 
 ##################
@@ -114,9 +117,10 @@ def compute_sigma2(
     reflection_pad   : bool,
     cuda             : bool,
     nchunks          : int,
-    histogram_moments: bool
+    histogram_moments: bool,
+    device           : str | torch.device | None = None
 ) -> torch.Tensor:
-    """Computes sigma(j)^2 = <|Wx(t,j)|^2>_t used to normalize wavelet coefficients. 
+    """Computes sigma(j)^2 = <|Wx(t,j)|^2>_t used to normalize wavelet coefficients.
 
     :param x: input tensor of shape (batch_size, in_channels, T)
     :param J: number of scales (octaves) for each wavelet layer
@@ -124,8 +128,22 @@ def compute_sigma2(
     :param wav_type: wavelet type for each layer, e.g. 'battle_lemarie'
     :param high_freq: central frequency of mother wavelet for each layer, 0.5 may lead to important aliasing
     :param reflection_pad: use a reflection pad to account for edge effects
-    :param cuda: use GPU (cuda) for accelaerating computation
+    :param cuda: (DEPRECATED, use ``device`` instead) use GPU (cuda) for accelaerating computation
+    :param device: compute device, accepts None, 'cpu'/'cuda'/'mps'/'auto'
+        or a torch.device; takes precedence over ``cuda`` when provided
     """
+    device = resolve_device(device, cuda)
+
+    # MPS does not support float64/complex128: fall back to cpu to preserve
+    # precision rather than silently downcasting the wavelet transform.
+    if x.dtype == torch.float64 and not device_supports_float64(device):
+        warnings.warn(
+            "compute_sigma2: float64 input is not supported on the MPS device; "
+            "falling back to CPU for this computation.",
+            stacklevel=2
+        )
+        device = torch.device('cpu')
+
     # initialize model, here just a wavelet transform
     model = Model(
         model_type=None, gen_log_returns=True, T=x.shape[-1], r=1, J=J, Q=Q,
@@ -139,9 +157,8 @@ def compute_sigma2(
         skew_redundance=False, nchunks=nchunks
     )
 
-    if cuda:
-        x = x.cuda()
-        model = model.cuda()
+    x = x.to(device)
+    model = model.to(device)
 
     # wavelet coefficients
     Wx = model.compute_scattering_coefficients(x[:,:,None,None,:], None)[0]
@@ -171,10 +188,11 @@ def analyze(
     sigma2         : torch.Tensor | None = None, 
     keep_ps        : bool = True,
     multivariate   : bool = True, 
-    qs             : list[float] = [1.0, 2.0], 
-    estim_operator : Estimator | None = None, 
-    cuda           : bool = False, 
-    nchunks        : int = 1
+    qs             : list[float] = [1.0, 2.0],
+    estim_operator : Estimator | None = None,
+    cuda           : bool = False,
+    nchunks        : int = 1,
+    device         : str | torch.device | None = None
 ) -> DescribedTensor:
     """ Compute scattering based statistics on the provided data.
 
@@ -203,9 +221,13 @@ def analyze(
     :param cross_params: dictionary containing cross-cov model parameters
     :param qs: exponent to use in a "scat_marginal" or "scat+scat_spectra" model
     :param estim_operator: the operator computing the average on time <.>_t,
-        uniform average by default. 
-    :param cuda: use GPU (cuda) for accelaerating computation
+        uniform average by default.
+    :param cuda: (DEPRECATED, use ``device`` instead) use GPU (cuda) for accelaerating computation
     :param nchunks: number of data chunks to process, increase it to reduce memory usage
+    :param device: compute device, accepts None, 'cpu'/'cuda'/'mps'/'auto'
+        or a torch.device; takes precedence over ``cuda`` when provided.
+        NOTE: MPS (Apple GPU) does not support float64; float64 input is
+        automatically computed on CPU instead (with a warning).
     """
     if model_type not in ADMISSIBLE_MODEL_TYPES:
         raise ValueError(f"Unrecognized model type {model_type}.")
@@ -220,6 +242,9 @@ def analyze(
         raise ValueError("Scattering Spectra are not implemented" +
                          "for more than 3 convolution layers.")
 
+    # resolve compute device (new-style 'device' overrides deprecated 'cuda')
+    device = resolve_device(device, cuda)
+
     # format input
     x = torch.tensor(format_np(x))
     B, N, T = x.shape
@@ -228,6 +253,19 @@ def analyze(
         x = x.type(torch.float32)
         print("WARNING. Casting data to torch.float32.")
 
+    # MPS does not support float64/complex128: fall back to cpu to preserve
+    # precision rather than silently downcasting. The empirical precision probe
+    # showed float32-on-MPS is accurate enough for analyze, but we keep the
+    # safer cpu-fallback for float64 inputs (the user explicitly asked for
+    # double precision in that case).
+    if x.dtype == torch.float64 and not device_supports_float64(device):
+        warnings.warn(
+            "analyze: float64 input is not supported on the MPS device; "
+            "falling back to CPU. Pass float32 data to run on MPS.",
+            stacklevel=2
+        )
+        device = torch.device('cpu')
+
     # default value
     if J is None:
         J = int(np.log2(T)) - 3
@@ -235,12 +273,15 @@ def analyze(
     # compute normalization
     if normalize is not None and sigma2 is None:
         sigma2 = compute_sigma2(
-            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, False
+            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, False,
+            device=device
         )
         if normalize == 'batch_ps':
             sigma2 = sigma2.mean(0, keepdim=True)
     if sigma2 is not None and sigma2.is_complex():
         raise ValueError("Normalization should be real!.")
+    if sigma2 is not None:
+        sigma2 = sigma2.to(device)
 
     # initialize model
     model = Model(
@@ -256,9 +297,8 @@ def analyze(
     )
 
     # compute
-    if cuda:
-        x = x.cuda()
-        model = model.cuda()
+    x = x.to(device)
+    model = model.to(device)
     Rx = model(x)
     Rx.config = model.config
 
@@ -284,8 +324,8 @@ def analyze(
                 sigma2_bjr = sigma2[:, nr, :].reshape(sigma2.shape[0], -1, 1)
                 Rx.y[:, mask_ps, :] = Rx.y[:, mask_ps, :] * (sigma2_bjl * sigma2_bjr).pow(0.5)
 
-    if cuda:
-        Rx = Rx.cpu()
+    # always return results on cpu (numpy-friendly, device-agnostic)
+    Rx = Rx.cpu()
 
     return Rx
 
@@ -319,8 +359,9 @@ def self_simi_obstruction_score(
     Q        : int = 1, 
     wav_type : str = 'battle_lemarie', 
     high_freq: float = 0.425,
-    nchunks  : int = 1, 
-    cuda     : bool = False
+    nchunks  : int = 1,
+    cuda     : bool = False,
+    device   : str | torch.device | None = None
 ) -> tuple:
     """ Quantifies obstruction to self-similarity in a certain range of scales.
 
@@ -331,7 +372,9 @@ def self_simi_obstruction_score(
     :param wav_type: wavelet type for each layer, e.g. 'battle_lemarie'
     :param high_freq: central frequency of mother wavelet for each layer, 0.5 gives important aliasing
     :param nchunks: nb of chunks, increase it to reduce memory usage
-    :param cuda: does calculation on gpu
+    :param cuda: (DEPRECATED, use ``device`` instead) does calculation on gpu
+    :param device: compute device, accepts None, 'cpu'/'cuda'/'mps'/'auto'
+        or a torch.device; takes precedence over ``cuda`` when provided
 
     :return:
         - score on white noise reference (gives the score estimation error)
@@ -342,7 +385,7 @@ def self_simi_obstruction_score(
         Rx = analyze(
             x, model_type='scat_spectra', r=2, J=J, Q=Q,
             wav_type=wav_type, high_freq=high_freq, normalize='batch_ps',
-            estim_operator=None, cuda=cuda, nchunks=nchunks
+            estim_operator=None, cuda=cuda, nchunks=nchunks, device=device
         ).mean_batch()
 
     # white noise reference score
@@ -352,7 +395,7 @@ def self_simi_obstruction_score(
         Rx_wn = analyze(
             x_wn, model_type='scat_spectra', r=2, J=J, Q=Q,
             wav_type=wav_type, high_freq=high_freq, normalize='batch_ps',
-            estim_operator=None, cuda=cuda, nchunks=nchunks
+            estim_operator=None, cuda=cuda, nchunks=nchunks, device=device
         ).mean_batch()
 
     def self_simi_score_spars(Rx):
@@ -468,6 +511,7 @@ def generate(
     x0                : PriceData | np.ndarray | None = None,
     R                 : int = 1,
     max_iterations    : int = 1000,
+    max_attempts_per_batch: int = 10,
     tol_optim         : float = 1e-3,
     seed              : int | None = None,
     nchunks           : int = 1,
@@ -477,9 +521,10 @@ def generate(
     load_cache        : bool = True,
     trace_path        : Path | str | None = None,
     cuda              : bool = False,
-    verbose           : bool = True
+    verbose           : bool = True,
+    device            : str | torch.device | None = None
 ) -> PriceData:
-    """ Generate time-series from a scattering model. 
+    """ Generate time-series from a scattering model.
     
     :param x: input data to estimate our model from
         np.array of shape (T,) or (N,T) or (B,N,T),
@@ -511,6 +556,11 @@ def generate(
     :param x0: initial time-series to start the optimization
     :param R: number of realizations to generate
     :param max_iterations: maximum number of optimization iterations
+    :param max_attempts_per_batch: a batch whose optimization does not reach
+        ``tol_optim`` within ``max_iterations`` is retried from a fresh random
+        initialization. This caps the number of such retries for a single batch
+        before giving up with a RuntimeError, so a non-converging configuration
+        fails loudly instead of looping forever. Raise it to be more patient.
     :param tol_optim: tolerance to stop optimization
     :param seed: seed for initial generating initial white noise x0 
     :param nchunks: number of data chunks to process, increase it to reduce memory usage
@@ -518,13 +568,22 @@ def generate(
     :param cache_path: the directory used to store data
     :param load_cache: load already generated data
     :param trace_path: if provided, will save all the iterations of the data during gradient descent
-    :param cuda: use GPU (cuda) for accelaerating computation
+    :param cuda: (DEPRECATED, use ``device`` instead) use GPU (cuda) for accelaerating computation
     :param verbose: Verbosity level for logging
+    :param device: compute device, accepts None, 'cpu'/'cuda'/'mps'/'auto'
+        or a torch.device; takes precedence over ``cuda`` when provided.
+        NOTE: generation relies on a double-precision L-BFGS optimization which
+        MPS (Apple GPU) cannot run (no float64 support); when float64 generation
+        is requested on MPS the computation automatically falls back to CPU
+        (with a warning). Pass float32 data to actually run generate on MPS.
     """
+    # resolve compute device (new-style 'device' overrides deprecated 'cuda')
+    device = resolve_device(device, cuda)
+
     # arguments checks and formatting
     if x is None and Rx is None:
         raise Exception(
-            "Should provide either target data to estimate statistics on" + 
+            "Should provide either target data to estimate statistics on" +
             "or statistics to generate from."
         )
     if x is None and gen_length is None:
@@ -554,8 +613,19 @@ def generate(
         gen_length = x.shape[-1]
     if x is not None:
         dtype = x.dtype
-    else: 
+    else:
         dtype = Rx.y.real.dtype
+    # MPS does not support float64/complex128. Generation uses a precision
+    # sensitive L-BFGS optimization, so for double precision we fall back to
+    # CPU (rather than silently downcasting and hurting convergence).
+    if dtype == torch.float64 and not device_supports_float64(device):
+        warnings.warn(
+            "generate: float64 is not supported on the MPS device; falling "
+            "back to CPU for the optimization. Pass float32 data to run "
+            "generate on MPS.",
+            stacklevel=2
+        )
+        device = torch.device('cpu')
     if cache_path is not None:
         assert seed is None, "Seed should not be provided when caching."
         assert x0 is None, "Initial time-series should not be provided when caching."
@@ -592,7 +662,8 @@ def generate(
     # initialize normalization for the model (by average power spectrum)
     if x is not None:
         sigma2_target = compute_sigma2(
-            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, False
+            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, False,
+            device=device
         )
     else:
         sigma2_target = Rx.query("coeff_type=='variance'").y.real
@@ -600,11 +671,14 @@ def generate(
     sigma2_target = sigma2_target.mean(0, keepdims=True)
     if sigma2_target.is_complex():
         raise ValueError("Normalization sigma2 should be real!.")
+    # build the model on cpu; it is moved to the target device below as a whole
+    sigma2_target = sigma2_target.cpu()
     histogram_norm = None
     if histogram_moments:
         sigma2_lnmW = compute_sigma2(
-            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, True
-        )
+            x, J, Q, wav_type, high_freq, reflection_pad, cuda, nchunks, True,
+            device=device
+        ).cpu()
         filters = torch.tensor(
             [[1] * (2 ** j) + [0] * (gen_length-2**j) for j in range(J)], 
         )
@@ -626,12 +700,11 @@ def generate(
         histogram_moments=histogram_moments, histogram_norm=histogram_norm,
         skew_redundance=True, nchunks=nchunks
     )
-    if cuda:
-        model = model.cuda()
-        if x is not None:
-            x = x.cuda()
-        if Rx is not None:
-            Rx = Rx.cuda()
+    model = model.to(device)
+    if x is not None:
+        x = x.to(device)
+    if Rx is not None:
+        Rx = Rx.to(device)
     if verbose:
         if model.all_coeff_types is not None:
             print(f"Model {model_type} based on {model.count_coefficients():,} statistics: ")
@@ -654,8 +727,7 @@ def generate(
                 histogram_moments=histogram_moments, histogram_norm=histogram_norm,
                 skew_redundance=True, nchunks=nchunks
             )
-            if cuda:
-                model_target = model_target.cuda()
+            model_target = model_target.to(device)
         else:
             model_target = model
         Rx = model_target(x)
@@ -677,6 +749,7 @@ def generate(
         x0_seed = np.random.randint(1, int(1e8), size=1)[0]
     gen_list = []
     ibatch = 0
+    attempts = 0  # failed (non-converged) attempts for the current batch
     pbar = None
     if verbose:
         pbar = tqdm(total=nbatches_to_gen)
@@ -697,7 +770,7 @@ def generate(
         # init solver and convergence criterium
         solver = Solver(
             shape=torch.Size((batch_size,N,gen_length)), model=model, loss=loss,
-            Rx_target=Rx, x0=x0_batch, cuda=cuda
+            Rx_target=Rx, x0=x0_batch, cuda=cuda, device=device
         )
         check_conv_criterion = CheckConvCriterion(
             solver=solver, tol=tol_optim, save_interval_data=trace_path and 1, verbose=verbose
@@ -713,8 +786,22 @@ def generate(
             )
             if res['nit'] == max_iterations:
                 # do not accept syntheses which haven't converged
-                print("MAX ITERATIONS REACHED. Optim failed.")
+                attempts += 1
+                if attempts >= max_attempts_per_batch:
+                    raise RuntimeError(
+                        f"Optimization failed to reach tol_optim={tol_optim:.1e} "
+                        f"within max_iterations={max_iterations} for "
+                        f"{attempts} consecutive attempts on batch {ibatch}. "
+                        "Giving up rather than retrying forever. Try increasing "
+                        "max_iterations, loosening tol_optim, raising "
+                        "max_attempts_per_batch, or (on MPS/float32) using "
+                        "device='cpu' for higher precision."
+                    )
                 if verbose:
+                    print(
+                        f"MAX ITERATIONS REACHED. Optim failed "
+                        f"(attempt {attempts}/{max_attempts_per_batch}), retrying."
+                    )
                     pbar.refresh()
                 continue
         except SmallEnoughException:  # raised by check_conv_criterion
@@ -755,6 +842,7 @@ def generate(
                 np.save(trace_path/('full_trace'+fname), optim_trace)
             
             ibatch += 1
+            attempts = 0  # reset retry budget for the next batch
             if verbose:
                 pbar.update(1)
 

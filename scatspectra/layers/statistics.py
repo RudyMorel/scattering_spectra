@@ -91,6 +91,15 @@ class AverageLowPass(nn.Module):
         y_mod = self.ave(torch.abs(Wx[:, :, :-1, :, :]))
         y_low = self.ave(Wx[:, :, -1:, :, :])
 
+        # y_mod is real (from torch.abs) while y_low keeps Wx's complex dtype.
+        # On CPU/CUDA torch.cat promotes the real tensor to complex
+        # automatically, but the MPS backend cannot concatenate mixed
+        # real+complex tensors (raises "cat_int32_t_float_float2"). Promote
+        # the real tensor to the complex dtype explicitly so the cat works on
+        # all backends; this is a no-op result-wise on cpu/cuda.
+        if y_low.is_complex() and not y_mod.is_complex():
+            y_mod = y_mod.to(y_low.dtype)
+
         y = torch.cat([y_mod, y_low], dim=-3)
 
         return y.reshape(y.shape[0], y.shape[1], -1, y.shape[-1])
@@ -130,7 +139,7 @@ class Correlation(nn.Module):
         self.df_scale = create_scale_description(
             sc_idxer.sc_idces[rl-1], sc_idxer.sc_idces[rr-1], sc_idxer)
 
-        self.idx_l, self.idx_r = self.df_scale[['scl', 'scr']].values.T
+        self.idx_l, self.idx_r = self.df_scale[['scl', 'scr']].values.T.copy()
         if rl == 2:
             self.idx_l = self.idx_l - sc_idxer.JQ(1) - 1
         if rr == 2:

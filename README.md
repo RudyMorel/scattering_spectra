@@ -89,7 +89,7 @@ from scatspectra import generate
 snp_data = SPDaily()
 
 # GENERATION
-gen_data = generate(snp_data, cuda=CUDA, tol_optim=6e-3)
+gen_data = generate(snp_data, device='auto', tol_optim=6e-3)
 
 # VISUALIZATION
 fig, axes = plt.subplots(2, 1, figsize=(10, 4))
@@ -102,6 +102,29 @@ axes[1].set_ylim(-0.1, 0.1)
 ![alt text](illustration/generation.png "Generation of a signal")
 
 See `tutorial.ipynb` and `testing.ipynb` for more code examples. 
+
+## Hardware acceleration (CPU / CUDA / Apple MPS)
+
+The `analyze`, `generate` and `self_simi_obstruction_score` functions accept a
+`device` argument selecting the compute backend:
+
+- `device='cpu'` (default): run on CPU.
+- `device='cuda'`: run on an NVIDIA GPU.
+- `device='mps'`: run on an Apple Silicon GPU (Metal Performance Shaders, requires a recent PyTorch).
+- `device='auto'`: pick the best backend available (cuda, else mps, else cpu).
+- a `torch.device` instance is also accepted.
+
+```python
+scat = analyze(x, device='auto')
+gen_data = generate(snp_data, device='mps', tol_optim=6e-3)
+```
+
+The boolean `cuda=True/False` argument is still accepted but **deprecated** in
+favor of `device='cuda'`/`device='cpu'`.
+
+Note on precision: Apple's MPS backend does not support float64 / complex128.
+Computations on float64 input therefore automatically fall back to CPU (with a
+warning) to preserve precision; pass float32 input to run genuinely on MPS.
 
 
 [1] "Scale Dependencies and Self-Similar Models with Wavelet Scattering Spectra"
